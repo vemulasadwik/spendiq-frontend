@@ -6,7 +6,7 @@ import {
 } from "recharts";
 
 // ── API ───────────────────────────────────────────────────────────────────────
-const API_BASE = "http://localhost:8080";
+const API_BASE = "https://spendiq-backend-wihw.onrender.com";
 const apiCall = async (path, method = "GET", body = null) => {
   const token = localStorage.getItem("spendiq_token");
   const res = await fetch(`${API_BASE}${path}`, {
