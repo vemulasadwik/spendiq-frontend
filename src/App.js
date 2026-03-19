@@ -221,11 +221,11 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
 
   const [expenses, setExpensesRaw] = useState(() => {
     const stored = readLS(storageKey, null);
-    // If null (new user) or if stored data looks like the old INIT_EXPENSES (ids 1-8), start fresh
-    if (!stored) return [];
-    const ids = stored.map(e => e.id).sort((a,b)=>a-b);
-    const isInitData = ids.length <= 8 && ids.every(id => id >= 1 && id <= 8);
-    if (isInitData) { localStorage.removeItem(storageKey); return []; }
+    if (!stored) return []; // new user - start empty
+    // Wipe old INIT_EXPENSES demo data: those entries had ids 1-8 and small amounts
+    const isDemo = Array.isArray(stored) && stored.length > 0 &&
+      stored.every(e => typeof e.id === "number" && e.id >= 1 && e.id <= 8);
+    if (isDemo) { localStorage.removeItem(storageKey); return []; }
     return stored;
   });
   const setExpenses = (val) => {
@@ -767,7 +767,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
         </>}
 
         {/* ═══ GROUP SPLITTER ═══ */}
-        {page==="splitter" && <GroupSplitter T={T} dark={dark} groups={groups} setGroups={setGroups} addNotificationsForGroup={addNotificationsForGroup} dismissNotificationForMember={dismissNotificationForMember} allUsers={allUsers} currentUser={user} qrMap={qrMap} handleQRUpload={handleQRUpload} refreshUsers={refreshUsers} splitterNav={splitterNav} setSplitterNav={setSplitterNav}/>}
+        {page==="splitter" && <GroupSplitter T={T} dark={dark} groups={groups} setGroups={setGroups} addNotificationsForGroup={addNotificationsForGroup} dismissNotificationForMember={dismissNotificationForMember} allUsers={allUsers} currentUser={user} qrMap={qrMap} setQrMap={setQrMap} handleQRUpload={handleQRUpload} refreshUsers={refreshUsers} splitterNav={splitterNav} setSplitterNav={setSplitterNav}/>}
       </main>
 
       {/* ── CLICK AWAY TO CLOSE BELL ── */}
@@ -902,7 +902,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // GROUP SPLITTER
 // ══════════════════════════════════════════════════════════════════════════════
-function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMap, handleQRUpload, splitterNav, setSplitterNav, addNotificationsForGroup, dismissNotificationForMember, refreshUsers }) {
+function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMap, setQrMap, handleQRUpload, splitterNav, setSplitterNav, addNotificationsForGroup, dismissNotificationForMember, refreshUsers }) {
   const { w } = useWindowSize();
   const isMobile = w < 640;
   const [view, setView]           = useState("list");
@@ -942,8 +942,16 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
         qrUrl: g.qrImageUrl || null, // backend QR URL
       }));
       setGroups(mapped);
-      // QR URLs are stored in each group's qrUrl field
-      // They are loaded via qrMap passed from Dashboard
+      // Load QR from backend into qrMap so all users see it
+      mapped.forEach(g => {
+        if (g.qrUrl) {
+          setQrMap(prev => {
+            const gid = String(g.id);
+            if (prev[gid]?.[g.paidBy]) return prev; // don't overwrite local
+            return { ...prev, [gid]: { ...(prev[gid]||{}), [g.paidBy]: g.qrUrl } };
+          });
+        }
+      });
     } catch(e) { console.error("loadGroups error:", e); }
   };
 
@@ -1059,7 +1067,9 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                     <div style={{ fontWeight:800, fontSize:16, color:"#f97316" }}>₹{g.total.toLocaleString()}</div>
                     <div style={{ fontSize:11, color: pending>0?"#f97316":"#10b981" }}>{pending>0?`${pending} pending`:"All settled ✓"}</div>
                   </div>
-                  <button className="dbtn" onClick={e=>{ e.stopPropagation(); deleteGroup(g.id); }}>✕</button>
+                  {currentUser.name === g.paidBy && (
+                    <button className="dbtn" onClick={e=>{ e.stopPropagation(); deleteGroup(g.id); }}>✕</button>
+                  )}
                 </div>
               </div>
             );
@@ -1149,7 +1159,13 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
       {/* ── DETAIL VIEW ── */}
       {view==="detail" && grp && (
         <div>
-          <button className="btn-g" style={{ marginBottom:18, padding:"8px 16px", fontSize:13 }} onClick={()=>setView("list")}>← All Splits</button>
+          <div style={{ display:"flex", gap:10, marginBottom:18 }}>
+            <button className="btn-g" style={{ padding:"8px 16px", fontSize:13 }} onClick={()=>setView("list")}>← All Splits</button>
+            {currentUser.name === grp.paidBy && (
+              <button className="btn-g" style={{ padding:"8px 16px", fontSize:13, color:"#f43f5e", borderColor:"#f43f5e44" }}
+                onClick={()=>{ if(window.confirm("Delete this split?")) deleteGroup(grp.id); }}>🗑 Delete Split</button>
+            )}
+          </div>
           <div className="card" style={{ marginBottom:16 }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
               <div>
