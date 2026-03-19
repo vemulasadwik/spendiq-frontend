@@ -1024,9 +1024,12 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
   const deleteGroup = async (id) => {
     try {
       await apiCall(`/api/splits/${id}`, "DELETE");
-      setGroups(prev => prev.filter(g => g.id !== id));
+      await loadGroups(); // reload from backend
       setView("list");
-    } catch(e) { console.error("deleteGroup error:", e); }
+    } catch(e) {
+      console.error("deleteGroup error:", e);
+      alert("Could not delete split: " + (e.message || "Unknown error"));
+    }
   };
 
   return (
