@@ -95,7 +95,7 @@ export default function App() {
   };
 
   if (!authUser) return <AuthScreen onLogin={handleLogin} authPage={authPage} setAuthPage={setAuthPage}/>;
-  return <Dashboard user={authUser} allUsers={allUsers} onLogout={()=>{ localStorage.removeItem("spendiq_token"); setAuthUser(null); setAllUsers([]); }}/>;
+  return <Dashboard user={authUser} allUsers={allUsers} refreshUsers={fetchAllUsers} onLogout={()=>{ localStorage.removeItem("spendiq_token"); setAuthUser(null); setAllUsers([]); }}/>;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -201,7 +201,7 @@ function AuthScreen({ onLogin, authPage, setAuthPage }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════════
-function Dashboard({ user, onLogout, allUsers }) {
+function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
   const [dark, setDark]           = useState(true);
   const [page, setPage]           = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -219,7 +219,15 @@ function Dashboard({ user, onLogout, allUsers }) {
     try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
   };
 
-  const [expenses, setExpensesRaw] = useState(() => readLS(storageKey, []));
+  const [expenses, setExpensesRaw] = useState(() => {
+    const stored = readLS(storageKey, null);
+    // If null (new user) or if stored data looks like the old INIT_EXPENSES (ids 1-8), start fresh
+    if (!stored) return [];
+    const ids = stored.map(e => e.id).sort((a,b)=>a-b);
+    const isInitData = ids.length <= 8 && ids.every(id => id >= 1 && id <= 8);
+    if (isInitData) { localStorage.removeItem(storageKey); return []; }
+    return stored;
+  });
   const setExpenses = (val) => {
     setExpensesRaw(prev => {
       const next = typeof val === "function" ? val(prev) : val;
@@ -306,9 +314,10 @@ function Dashboard({ user, onLogout, allUsers }) {
     } catch(e) { console.error(e); }
   };
 
-  const handleQRUpload = (groupId, memberName, file) => {
+  const handleQRUpload = async (groupId, memberName, file) => {
     if (!file) return;
     const gid = String(groupId);
+    // Save to localStorage immediately for instant preview
     const reader = new FileReader();
     reader.onload = ev => {
       setQrMap(prev => ({
@@ -317,6 +326,19 @@ function Dashboard({ user, onLogout, allUsers }) {
       }));
     };
     reader.readAsDataURL(file);
+    // Also upload to backend so other users can see it
+    try {
+      const token = localStorage.getItem("spendiq_token");
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${API_BASE}/api/splits/${groupId}/qr`, {
+        method: "POST",
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: formData,
+      });
+      const text = await res.text();
+      console.log("QR uploaded to backend:", text);
+    } catch(e) { console.error("QR backend upload failed:", e); }
   };
 
   const T = dark ? {
@@ -745,7 +767,7 @@ function Dashboard({ user, onLogout, allUsers }) {
         </>}
 
         {/* ═══ GROUP SPLITTER ═══ */}
-        {page==="splitter" && <GroupSplitter T={T} dark={dark} groups={groups} setGroups={setGroups} addNotificationsForGroup={addNotificationsForGroup} dismissNotificationForMember={dismissNotificationForMember} allUsers={allUsers} currentUser={user} qrMap={qrMap} handleQRUpload={handleQRUpload} refreshUsers={fetchAllUsers} splitterNav={splitterNav} setSplitterNav={setSplitterNav}/>}
+        {page==="splitter" && <GroupSplitter T={T} dark={dark} groups={groups} setGroups={setGroups} addNotificationsForGroup={addNotificationsForGroup} dismissNotificationForMember={dismissNotificationForMember} allUsers={allUsers} currentUser={user} qrMap={qrMap} handleQRUpload={handleQRUpload} refreshUsers={refreshUsers} splitterNav={splitterNav} setSplitterNav={setSplitterNav}/>}
       </main>
 
       {/* ── CLICK AWAY TO CLOSE BELL ── */}
@@ -914,11 +936,14 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
         note: g.note || "",
         total: parseFloat(g.totalAmount),
         perHead: parseFloat(g.perHead),
-        paidBy: g.paidBy?.name || g.paidBy,          // backend returns paidBy as UserResponse object
-        members: (g.members || []).map(m => m.name || m), // members is Set<UserResponse>
+        paidBy: g.paidBy?.name || g.paidBy,
+        members: (g.members || []).map(m => m.name || m),
         owes: (g.owes || []).map(o => ({ name: o.userName, amount: parseFloat(o.amount), paid: o.paid, oweId: o.id })),
+        qrUrl: g.qrImageUrl || null, // backend QR URL
       }));
       setGroups(mapped);
+      // QR URLs are stored in each group's qrUrl field
+      // They are loaded via qrMap passed from Dashboard
     } catch(e) { console.error("loadGroups error:", e); }
   };
 
@@ -1161,7 +1186,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
           <div style={{ fontWeight:700, fontSize:15, marginBottom:12 }}>Members & Payment Status</div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:14 }}>
             {grp.owes.map((o,i)=>{
-              const qr = (qrMap[grp.id]||{})[o.name];
+              const qr = (qrMap[String(grp.id)]||{})[grp.paidBy] || grp.qrUrl;
               return (
                 <div key={i} style={{ background:T.card, border:`1px solid ${o.paid?"#10b98140":T.border}`, borderRadius:16, padding:18, transition:"all .2s" }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
