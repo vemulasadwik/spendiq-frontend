@@ -208,18 +208,53 @@ function Dashboard({ user, onLogout, allUsers }) {
   const { w } = useWindowSize();
   const isMobile = w < 640;
   const isTablet = w >= 640 && w < 1024;
-  const [expenses, setExpenses]   = useState(INIT_EXPENSES);
+  // Per-user expense storage — starts empty for new users
+  const storageKey = `spendiq_expenses_${user?.id || user?.email || "default"}`;
+  const budgetKey  = `spendiq_budget_${user?.id || user?.email || "default"}`;
+
+  const readLS = (key, fallback) => {
+    try { const raw = localStorage.getItem(key); return raw !== null ? JSON.parse(raw) : fallback; } catch { return fallback; }
+  };
+  const writeLS = (key, value) => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  };
+
+  const [expenses, setExpensesRaw] = useState(() => readLS(storageKey, []));
+  const setExpenses = (val) => {
+    setExpensesRaw(prev => {
+      const next = typeof val === "function" ? val(prev) : val;
+      writeLS(storageKey, next);
+      return next;
+    });
+  };
   const [modal, setModal]         = useState(false);
   const [editTarget, setEdit]     = useState(null);
   const [filterCat, setFilterCat] = useState("All");
   const [search, setSearch]       = useState("");
   const [dateFrom, setDateFrom]   = useState("");
   const [dateTo, setDateTo]       = useState("");
-  const [budget, setBudget]       = useState(15000);
+  const [budget, setBudgetRaw] = useState(() => readLS(budgetKey, 15000));
+  const setBudget = (val) => {
+    setBudgetRaw(prev => {
+      const next = typeof val === "function" ? val(prev) : val;
+      writeLS(budgetKey, next);
+      return next;
+    });
+  };
   const [budgetEdit, setBudgetEdit] = useState(false);
-  const [budgetInput, setBudgetInput] = useState(15000);
+  const [budgetInput, setBudgetInput] = useState(() => readLS(budgetKey, 15000));
   const [groups, setGroups]       = useState([]);
-  const [qrMap, setQrMap]         = useState({});
+  const qrKey = `spendiq_qrmap_shared`;
+  const [qrMap, setQrMapRaw] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(qrKey) || "{}"); } catch { return {}; }
+  });
+  const setQrMap = (fn) => {
+    setQrMapRaw(prev => {
+      const next = typeof fn === "function" ? fn(prev) : fn;
+      try { localStorage.setItem(qrKey, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
   const [notifications, setNotifications] = useState({});
   const [splitterNav, setSplitterNav] = useState(null);
   const [showBell, setShowBell]   = useState(false);
@@ -273,11 +308,14 @@ function Dashboard({ user, onLogout, allUsers }) {
 
   const handleQRUpload = (groupId, memberName, file) => {
     if (!file) return;
+    const gid = String(groupId);
     const reader = new FileReader();
-    reader.onload = ev => setQrMap(prev => ({
-      ...prev,
-      [groupId]: { ...(prev[groupId]||{}), [memberName]: ev.target.result }
-    }));
+    reader.onload = ev => {
+      setQrMap(prev => ({
+        ...prev,
+        [gid]: { ...(prev[gid]||{}), [memberName]: ev.target.result }
+      }));
+    };
     reader.readAsDataURL(file);
   };
 
@@ -363,6 +401,11 @@ function Dashboard({ user, onLogout, allUsers }) {
     lbl{font-size:11.5px;color:${T.muted};font-weight:600;display:block;margin-bottom:6px;letter-spacing:.04em;text-transform:uppercase}
     .tag{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600}
     .avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#5b5ef4,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0}
+    .abtn:disabled{opacity:.5;cursor:not-allowed}
+    @media(max-width:768px){
+      .modal{width:95vw;padding:20px}
+      .srch{width:140px}
+    }
   `;
 
   return (
@@ -396,7 +439,7 @@ function Dashboard({ user, onLogout, allUsers }) {
 
         {/* user chip */}
         <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:T.row, borderRadius:12, border:`1px solid ${T.border2}`, marginBottom:8 }}>
-          <div className="avatar">{user.avatar}</div>
+          <div className="avatar">{user.avatar || (user.name||"?").split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2)}</div>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:13, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{user.name}</div>
             <div style={{ fontSize:11, color:T.muted, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{user.email}</div>
@@ -414,7 +457,7 @@ function Dashboard({ user, onLogout, allUsers }) {
 
         {[["dashboard","▦","Dashboard"],["expenses","☰","Expenses"],["analytics","◎","Analytics"],["recurring","↻","Recurring"],["splitter","⚡","Group Splitter"]].map(([id,ic,lb])=>(
           <button key={id} className={`nb ${page===id?"on":""}`} onClick={()=>setPage(id)}>
-            <span style={{ fontSize:15 }}>{ic}</span>{lb}
+            <span style={{ fontSize:15 }}>{ic}</span><span className="nav-label">{lb}</span>
             {id==="splitter"&&groups.length>0&&<span style={{ marginLeft:"auto", background:"#5b5ef4", color:"#fff", borderRadius:10, fontSize:10, padding:"1px 7px", fontWeight:700 }}>{groups.length}</span>}
           </button>
         ))}
@@ -702,7 +745,7 @@ function Dashboard({ user, onLogout, allUsers }) {
         </>}
 
         {/* ═══ GROUP SPLITTER ═══ */}
-        {page==="splitter" && <GroupSplitter T={T} dark={dark} groups={groups} setGroups={setGroups} addNotificationsForGroup={addNotificationsForGroup} dismissNotificationForMember={dismissNotificationForMember} allUsers={allUsers} currentUser={user} qrMap={qrMap} handleQRUpload={handleQRUpload} splitterNav={splitterNav} setSplitterNav={setSplitterNav}/>}
+        {page==="splitter" && <GroupSplitter T={T} dark={dark} groups={groups} setGroups={setGroups} addNotificationsForGroup={addNotificationsForGroup} dismissNotificationForMember={dismissNotificationForMember} allUsers={allUsers} currentUser={user} qrMap={qrMap} handleQRUpload={handleQRUpload} refreshUsers={fetchAllUsers} splitterNav={splitterNav} setSplitterNav={setSplitterNav}/>}
       </main>
 
       {/* ── CLICK AWAY TO CLOSE BELL ── */}
@@ -795,11 +838,11 @@ function Dashboard({ user, onLogout, allUsers }) {
             <div style={{ fontFamily:"'Syne',sans-serif", fontWeight:900, fontSize:20, marginBottom:20 }}>{editTarget?"✎ Edit Entry":"+ New Entry"}</div>
             <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
               <div><lbl>Title</lbl><input className="inp" placeholder="e.g. Dinner" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12 }}>
                 <div><lbl>Amount (₹)</lbl><input className="inp" type="number" placeholder="0" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/></div>
                 <div><lbl>Date</lbl><input className="inp" type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></div>
               </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12 }}>
                 <div><lbl>Category</lbl>
                   <select className="inp" value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>
                     {Object.keys(CAT_META).map(c=><option key={c}>{c}</option>)}
@@ -837,7 +880,7 @@ function Dashboard({ user, onLogout, allUsers }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // GROUP SPLITTER
 // ══════════════════════════════════════════════════════════════════════════════
-function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMap, handleQRUpload, splitterNav, setSplitterNav, addNotificationsForGroup, dismissNotificationForMember }) {
+function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMap, handleQRUpload, splitterNav, setSplitterNav, addNotificationsForGroup, dismissNotificationForMember, refreshUsers }) {
   const { w } = useWindowSize();
   const isMobile = w < 640;
   const [view, setView]           = useState("list");
@@ -849,6 +892,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
   // Load splits from backend on mount
   useEffect(() => {
     loadGroups();
+    refreshUsers && refreshUsers(); // ensure member list is fresh
   }, []);
 
   // Deep-link nav from notification
@@ -1028,7 +1072,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
               )}
             </div>
 
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12 }}>
               <div><lbl>Total Amount (₹)</lbl><input className="inp" type="number" placeholder="2400" value={gForm.totalAmount} onChange={e=>setGForm({...gForm,totalAmount:e.target.value})}/></div>
               <div><lbl>Date</lbl><input className="inp" type="date" value={gForm.date} onChange={e=>setGForm({...gForm,date:e.target.value})}/></div>
             </div>
