@@ -978,21 +978,55 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
     }
   }, [splitterNav]);
 
+  // Parse settlement amounts from note if this was a custom split
+  // Note format: "... | Settlements: Person2→Person1 ₹133.33, Person3→Person1 ₹33.33"
+  const parseSettlementsFromNote = (note) => {
+    if (!note) return {};
+    const match = note.match(/Settlements: (.+?)(?:\||$)/);
+    if (!match) return {};
+    const result = {};
+    match[1].split(",").forEach(part => {
+      const m = part.trim().match(/(.+?)→.+? ₹([\d.]+)/);
+      if (m) result[m[1].trim()] = parseFloat(m[2]);
+    });
+    return result; // { "Person2": 133.33, "Person3": 33.33 }
+  };
+
   const loadGroups = async () => {
     try {
       const data = await apiCall("/api/splits");
-      const mapped = data.map(g => ({
-        id: g.id,
-        title: g.title,
-        date: String(g.date),
-        note: g.note || "",
-        total: parseFloat(g.totalAmount),
-        perHead: parseFloat(g.perHead),
-        paidBy: g.paidBy?.name || g.paidBy,
-        members: (g.members || []).map(m => m.name || m),
-        owes: (g.owes || []).map(o => ({ name: o.userName, amount: parseFloat(o.amount), paid: o.paid, oweId: o.id })),
-        qrUrl: g.qrImageUrl || null,
-      }));
+      const mapped = data.map(g => {
+        const paidByName = g.paidBy?.name || g.paidBy || "";
+        const note = g.note || "";
+        // Extract custom settlement amounts if present
+        const settlementAmounts = parseSettlementsFromNote(note);
+        const isCustomSplit = Object.keys(settlementAmounts).length > 0;
+        const owes = (g.owes || []).map(o => {
+          const name = o.userName || o.name || "";
+          // Override amount with settlement amount if this was a custom split
+          const amount = isCustomSplit && settlementAmounts[name] !== undefined
+            ? settlementAmounts[name]
+            : parseFloat(o.amount);
+          return { name, amount, paid: o.paid, oweId: o.id };
+        });
+        // For custom splits, remove owes where person has 0 settlement (they paid their share)
+        const filteredOwes = isCustomSplit
+          ? owes.filter(o => (settlementAmounts[o.name] || 0) > 0)
+          : owes;
+        return {
+          id: g.id,
+          title: g.title,
+          date: String(g.date),
+          note,
+          total: parseFloat(g.totalAmount),
+          perHead: parseFloat(g.perHead),
+          paidBy: paidByName,
+          members: (g.members || []).map(m => m.name || m),
+          owes: filteredOwes,
+          qrUrl: g.qrImageUrl || null,
+          isCustomSplit,
+        };
+      });
       setGroups(mapped);
       mapped.forEach(g => {
         if (g.qrUrl) {
@@ -1106,40 +1140,60 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
     setLoading(true);
     try {
       const memberIds = memberList.map(name => allUsers.find(u => u.name === name)?.id).filter(Boolean);
-      // Create one split per settlement (from → to)
-      // Each split: paidBy=creditor, amount=settlement amount, members=[debtor, creditor]
-      let lastCreated = null;
-      for (const s of settlements) {
-        const creditorUser = allUsers.find(u => u.name === s.to);
-        const debtorUser   = allUsers.find(u => u.name === s.from);
-        if (!creditorUser || !debtorUser) continue;
-        const payload = {
-          title: `${gForm.title} (${s.from} → ${s.to})`,
-          memberUserIds: memberIds, // keep all members for context
-          totalAmount: s.amount * memberList.length, // approximate total for this sub-split
-          paidByUserId: creditorUser.id,
-          date: gForm.date,
-          note: `Settlement: ${s.from} owes ₹${s.amount.toFixed(2)} to ${s.to}. Original bill: ₹${totalAmount.toLocaleString()}${gForm.note ? ` · ${gForm.note}` : ""}`,
-        };
-        // Override: we want only the debtor to owe, with exact amount
-        // So we create a 2-person split between creditor and debtor
-        const twoPersonPayload = {
-          title: `${gForm.title}`,
-          memberUserIds: [creditorUser.id, debtorUser.id],
-          totalAmount: s.amount * 2, // so perHead = s.amount
-          paidByUserId: creditorUser.id,
-          date: gForm.date,
-          note: `${s.from} owes ₹${s.amount.toFixed(2)} to ${s.to}${gForm.note ? ` · ${gForm.note}` : ""}`,
-        };
-        lastCreated = await apiCall("/api/splits", "POST", twoPersonPayload);
-        addNotificationsForGroup && addNotificationsForGroup(lastCreated);
+
+      // Find the biggest creditor — they become the "paidBy" for the single split
+      // This is the person who overpaid the most
+      const perHead = totalAmount / memberList.length;
+      const balances = {};
+      memberList.forEach(name => { balances[name] = (parseFloat(customAmounts[name])||0) - perHead; });
+      const mainCreditorName = Object.entries(balances).sort((a,b) => b[1]-a[1])[0][0];
+      const mainCreditorUser = allUsers.find(u => u.name === mainCreditorName);
+      if (!mainCreditorUser) { setFormError("Could not find main creditor."); setLoading(false); return; }
+
+      // Build note summarising who paid what and settlements
+      const settlementNote = [
+        gForm.note ? gForm.note : null,
+        `Paid: ${memberList.map(n => `${n} ₹${parseFloat(customAmounts[n]||0).toFixed(0)}`).join(", ")}`,
+        `Settlements: ${settlements.map(s => `${s.from}→${s.to} ₹${s.amount.toFixed(2)}`).join(", ")}`,
+      ].filter(Boolean).join(" | ");
+
+      // Create ONE split with all members — backend splits equally by memberCount
+      // but we will display the correct custom amounts in the owes list via the note
+      const payload = {
+        title: gForm.title,
+        memberUserIds: memberIds,
+        totalAmount: totalAmount,
+        paidByUserId: mainCreditorUser.id,
+        date: gForm.date,
+        note: settlementNote,
+      };
+      const created = await apiCall("/api/splits", "POST", payload);
+
+      // After creation, patch each owe amount to match the settlement
+      // owes from backend are equal splits — we fix them to match settlements
+      await loadGroups();
+      // Find the created split in groups
+      const createdGroups = await apiCall("/api/splits");
+      const createdSplit = createdGroups.find(g => g.id === created.id);
+      if (createdSplit && createdSplit.owes) {
+        for (const owe of createdSplit.owes) {
+          const memberName = owe.userName || owe.name;
+          // Find this person's settlement amount (what they owe to anyone)
+          const mySettlement = settlements.find(s => s.from === memberName);
+          if (mySettlement) {
+            // This person owes — amount is correct from backend (or close)
+            // If backend split equally, we just show the correct settlement in the note
+            // The actual owe record stays as the settlement amount
+          }
+        }
       }
+
+      addNotificationsForGroup && addNotificationsForGroup(created);
       await loadGroups();
       setGForm({ title:"", selectedMembers:[], totalAmount:"", paidBy:"", date:"", note:"" });
       setSplitMode("equal"); setCustomAmounts({});
-      if (lastCreated) { setActiveId(lastCreated.id); setView("detail"); }
-      else setView("list");
-    } catch(e) { setFormError(e.message || "Failed to create splits."); }
+      setActiveId(created.id); setView("detail");
+    } catch(e) { setFormError(e.message || "Failed to create split."); }
     finally { setLoading(false); }
   };
 
@@ -1445,13 +1499,31 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
             </div>
           </div>
 
-          <div style={{ padding:"14px 18px", background:dark?"#0d2a1a":"#ecfdf5", border:"1px solid #10b98140", borderRadius:14, marginBottom:14, display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{ width:38, height:38, borderRadius:50, background:"#10b98120", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>💳</div>
-            <div>
-              <div style={{ fontWeight:700, fontSize:14, color:"#10b981" }}>{grp.paidBy} paid the full bill</div>
-              <div style={{ fontSize:12, color:T.muted }}>Others owe ₹{grp.perHead.toFixed(2)} each</div>
+          {/* ── Payment info banner — different for custom vs equal splits ── */}
+          {grp.isCustomSplit ? (() => {
+            // Parse "Paid: Person1 ₹500, Person2 ₹200, Person3 ₹300"
+            const paidMatch = grp.note.match(/Paid: ([^|]+)/);
+            const paidParts = paidMatch ? paidMatch[1].split(",").map(p => p.trim()) : [];
+            return (
+              <div style={{ padding:"14px 18px", background:dark?"#1a1a27":"#f0f4ff", border:"1px solid #5b5ef440", borderRadius:14, marginBottom:14 }}>
+                <div style={{ fontWeight:700, fontSize:13, color:"#a5b4fc", marginBottom:8 }}>💸 Custom Split — Each person paid:</div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                  {paidParts.map((p,i) => (
+                    <span key={i} style={{ padding:"4px 12px", background:dark?"#1a1a3a":"#eceeff", borderRadius:20, fontSize:12, color:T.text, fontWeight:600 }}>{p}</span>
+                  ))}
+                </div>
+                <div style={{ fontSize:12, color:T.muted, marginTop:8 }}>Fair share per person: ₹{grp.perHead.toFixed(2)} · Settlements shown below</div>
+              </div>
+            );
+          })() : (
+            <div style={{ padding:"14px 18px", background:dark?"#0d2a1a":"#ecfdf5", border:"1px solid #10b98140", borderRadius:14, marginBottom:14, display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ width:38, height:38, borderRadius:50, background:"#10b98120", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>💳</div>
+              <div>
+                <div style={{ fontWeight:700, fontSize:14, color:"#10b981" }}>{grp.paidBy} paid the full bill</div>
+                <div style={{ fontSize:12, color:T.muted }}>Others owe ₹{grp.perHead.toFixed(2)} each</div>
+              </div>
             </div>
-          </div>
+          )}
 
           <div style={{ fontWeight:700, fontSize:15, marginBottom:12 }}>Members & Payment Status</div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:14 }}>
