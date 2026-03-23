@@ -81,8 +81,9 @@ function exportCSV(expenses) {
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
   const [authUser, setAuthUser]   = useState(null);
-  const [authPage, setAuthPage]   = useState("login"); // "login" | "register"
+  const [authPage, setAuthPage]   = useState("login");
   const [allUsers, setAllUsers]   = useState([]);
+  const [loading, setLoading]     = useState(true); // checking saved session
 
   const fetchAllUsers = async () => {
     try { setAllUsers(await apiCall("/api/auth/users")); } catch(e) { console.error(e); }
@@ -93,6 +94,23 @@ export default function App() {
     setAuthUser(user);
     fetchAllUsers();
   };
+
+  // ── Auto-login: restore session from saved JWT on page refresh ──────────
+  useEffect(() => {
+    const token = localStorage.getItem("spendiq_token");
+    if (!token) { setLoading(false); return; }
+    apiCall("/api/auth/me")
+      .then(user => { setAuthUser(user); fetchAllUsers(); })
+      .catch(() => { localStorage.removeItem("spendiq_token"); })
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return (
+    <div style={{ background:"#0b0b10", minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:16 }}>
+      <div style={{ fontSize:44 }}>💸</div>
+      <div style={{ color:"#5b5ef4", fontSize:14, fontFamily:"sans-serif" }}>Loading SpendIQ Pro…</div>
+    </div>
+  );
 
   if (!authUser) return <AuthScreen onLogin={handleLogin} authPage={authPage} setAuthPage={setAuthPage}/>;
   return <Dashboard user={authUser} allUsers={allUsers} refreshUsers={fetchAllUsers} onLogout={()=>{ localStorage.removeItem("spendiq_token"); setAuthUser(null); setAllUsers([]); }}/>;
@@ -262,14 +280,11 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
   const [budgetEdit, setBudgetEdit] = useState(false);
   const [budgetInput, setBudgetInput] = useState(() => readLS(budgetKey, 15000));
   const [groups, setGroups]       = useState([]);
-  const qrKey = `spendiq_qrmap_shared`;
-  const [qrMap, setQrMapRaw] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(qrKey) || "{}"); } catch { return {}; }
-  });
+  // QR loaded from backend DB — not localStorage (which is device-specific)
+  const [qrMap, setQrMapRaw] = useState({});
   const setQrMap = (fn) => {
     setQrMapRaw(prev => {
       const next = typeof fn === "function" ? fn(prev) : fn;
-      try { localStorage.setItem(qrKey, JSON.stringify(next)); } catch {}
       return next;
     });
   };
@@ -327,40 +342,32 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
   const handleQRUpload = async (groupId, memberName, file) => {
     if (!file) return;
     const gid = String(groupId);
-    // Show preview instantly via localStorage
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      // Set locally first for instant preview
-      setQrMap(prev => ({
-        ...prev,
-        [gid]: { ...(prev[gid]||{}), [memberName]: ev.target.result }
-      }));
-      // Upload to backend so ALL users can see it
-      try {
-        const token = localStorage.getItem("spendiq_token");
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch(`${API_BASE}/api/splits/${groupId}/qr`, {
-          method: "POST",
-          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: formData,
-        });
-        if (res.ok) {
-          const data = await res.json();
-          // qrImageUrl is now a base64 data URL stored in DB
-          const backendQrUrl = data?.data?.qrImageUrl;
-          if (backendQrUrl) {
-            setQrMap(prev => ({
-              ...prev,
-              [gid]: { ...(prev[gid]||{}), [memberName]: backendQrUrl }
-            }));
-          }
-        } else {
-          console.error("QR upload failed:", res.status);
+    try {
+      const token = localStorage.getItem("spendiq_token");
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${API_BASE}/api/splits/${groupId}/qr`, {
+        method: "POST",
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: formData,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // Backend returns base64 data URL stored in DB — use this for ALL devices
+        const backendQrUrl = data?.data?.qrImageUrl;
+        if (backendQrUrl) {
+          setQrMap(prev => ({
+            ...prev,
+            [gid]: { ...(prev[gid]||{}), [memberName]: backendQrUrl }
+          }));
         }
-      } catch(e) { console.error("QR backend upload failed:", e); }
-    };
-    reader.readAsDataURL(file);
+      } else {
+        alert("Failed to upload QR. Please try again.");
+      }
+    } catch(e) {
+      console.error("QR upload failed:", e);
+      alert("Failed to upload QR: " + e.message);
+    }
   };
 
   const T = dark ? {
