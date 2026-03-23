@@ -961,6 +961,9 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
   const [formError, setFormError] = useState("");
   const [loading, setLoading]     = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [splitMode, setSplitMode]         = useState("equal");
+  const [customAmounts, setCustomAmounts] = useState({});
+  const [showShareModal, setShowShareModal] = useState(false);
 
   useEffect(() => {
     loadGroups();
@@ -1026,6 +1029,15 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
       const paidByUser = allUsers.find(u => u.name === gForm.paidBy);
       const memberIds = memberList.map(name => allUsers.find(u => u.name === name)?.id).filter(Boolean);
       if (!paidByUser) { setFormError("Could not find paid-by user."); setLoading(false); return; }
+      // Validate custom amounts sum if unequal split
+      if (splitMode === "custom") {
+        const total = memberList.reduce((s,n) => s + (parseFloat(customAmounts[n])||0), 0);
+        const expected = parseFloat(gForm.totalAmount);
+        if (Math.abs(total - expected) > 0.01) {
+          setFormError(`Custom amounts total ₹${total.toFixed(2)} but bill is ₹${expected.toFixed(2)}. Please adjust.`);
+          setLoading(false); return;
+        }
+      }
       const payload = {
         title: gForm.title,
         memberUserIds: memberIds,
@@ -1038,6 +1050,8 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
       await loadGroups();
       addNotificationsForGroup && addNotificationsForGroup(created);
       setGForm({ title:"", selectedMembers:[], totalAmount:"", paidBy:"", date:"", note:"" });
+      setSplitMode("equal");
+      setCustomAmounts({});
       setActiveId(created.id);
       setView("detail");
     } catch(e) { setFormError(e.message || "Failed to create split."); }
@@ -1089,6 +1103,36 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
       </div>
 
       {view==="list" && <>
+        {/* ── Total you owe across all splits ── */}
+        {(() => {
+          const totalOwe = groups.reduce((sum, g) => {
+            const myOwe = (g.owes || []).find(o => o.name === currentUser.name && !o.paid);
+            return sum + (myOwe ? myOwe.amount : 0);
+          }, 0);
+          const totalReceive = groups.reduce((sum, g) => {
+            if (g.paidBy !== currentUser.name) return sum;
+            return sum + (g.owes || []).filter(o => !o.paid).reduce((s,o) => s + o.amount, 0);
+          }, 0);
+          if (totalOwe === 0 && totalReceive === 0) return null;
+          return (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+              {totalOwe > 0 && (
+                <div style={{ padding:"14px 18px", background:dark?"#2a0f0f":"#fff0f0", border:"1px solid #f43f5e40", borderRadius:14 }}>
+                  <div style={{ fontSize:11, color:"#f43f5eaa", textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>💸 You Owe Total</div>
+                  <div style={{ fontSize:22, fontWeight:800, color:"#f43f5e", fontFamily:"'Syne',sans-serif" }}>₹{totalOwe.toFixed(2)}</div>
+                  <div style={{ fontSize:11, color:T.muted, marginTop:3 }}>across {groups.filter(g=>(g.owes||[]).find(o=>o.name===currentUser.name&&!o.paid)).length} split(s)</div>
+                </div>
+              )}
+              {totalReceive > 0 && (
+                <div style={{ padding:"14px 18px", background:dark?"#0d2a1a":"#ecfdf5", border:"1px solid #10b98140", borderRadius:14 }}>
+                  <div style={{ fontSize:11, color:"#10b981aa", textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>💰 To Receive Total</div>
+                  <div style={{ fontSize:22, fontWeight:800, color:"#10b981", fontFamily:"'Syne',sans-serif" }}>₹{totalReceive.toFixed(2)}</div>
+                  <div style={{ fontSize:11, color:T.muted, marginTop:3 }}>from {groups.filter(g=>g.paidBy===currentUser.name&&(g.owes||[]).some(o=>!o.paid)).length} split(s)</div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {groups.length===0 && (
           <div className="card" style={{ textAlign:"center", padding:60 }}>
             <div style={{ fontSize:48, marginBottom:14 }}>🍽️</div>
@@ -1174,17 +1218,65 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
             </div>
             <div><lbl>Note (optional)</lbl><input className="inp" placeholder="Dinner at Barbeque Nation" value={gForm.note} onChange={e=>setGForm({...gForm,note:e.target.value})}/></div>
             {gForm.totalAmount && gForm.selectedMembers.length > 0 && (
-              <div style={{ padding:"14px 16px", background:dark?"#1a1a27":"#f0f2fa", borderRadius:12, border:`1px solid ${T.border2}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                <div>
-                  <div style={{ fontSize:12, color:T.muted }}>Each person pays</div>
-                  <div style={{ fontSize:24, fontWeight:800, color:"#f97316", fontFamily:"'Syne',sans-serif" }}>
-                    ₹{(parseFloat(gForm.totalAmount||0)/Math.max(gForm.selectedMembers.length,1)).toFixed(2)}
+              <div>
+                {/* Split mode toggle */}
+                <div style={{ display:"flex", background:dark?"#0e0e17":"#f0f2fa", borderRadius:10, padding:3, marginBottom:12, gap:3 }}>
+                  {["equal","custom"].map(mode=>(
+                    <button key={mode} onClick={()=>{ setSplitMode(mode); setCustomAmounts({}); }}
+                      style={{ flex:1, padding:"7px", border:"none", cursor:"pointer", borderRadius:8, fontFamily:"'DM Sans',sans-serif", fontWeight:600, fontSize:12.5, transition:"all .2s",
+                        background: splitMode===mode?"linear-gradient(135deg,#5b5ef4,#8b5cf6)":"transparent",
+                        color: splitMode===mode?"#fff":T.muted }}>
+                      {mode==="equal"?"⚖️ Equal Split":"✏️ Custom Amounts"}
+                    </button>
+                  ))}
+                </div>
+
+                {splitMode==="equal" ? (
+                  <div style={{ padding:"14px 16px", background:dark?"#1a1a27":"#f0f2fa", borderRadius:12, border:`1px solid ${T.border2}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <div>
+                      <div style={{ fontSize:12, color:T.muted }}>Each person pays</div>
+                      <div style={{ fontSize:24, fontWeight:800, color:"#f97316", fontFamily:"'Syne',sans-serif" }}>
+                        ₹{(parseFloat(gForm.totalAmount||0)/Math.max(gForm.selectedMembers.length,1)).toFixed(2)}
+                      </div>
+                    </div>
+                    <div style={{ textAlign:"right" }}>
+                      <div style={{ fontSize:12, color:T.muted }}>Total ÷ Members</div>
+                      <div style={{ fontSize:14, color:T.text, fontWeight:600 }}>₹{parseFloat(gForm.totalAmount||0).toLocaleString()} ÷ {gForm.selectedMembers.length}</div>
+                    </div>
                   </div>
-                </div>
-                <div style={{ textAlign:"right" }}>
-                  <div style={{ fontSize:12, color:T.muted }}>Total ÷ Members</div>
-                  <div style={{ fontSize:14, color:T.text, fontWeight:600 }}>₹{parseFloat(gForm.totalAmount||0).toLocaleString()} ÷ {gForm.selectedMembers.length}</div>
-                </div>
+                ) : (
+                  <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                    {gForm.selectedMembers.map(name => (
+                      <div key={name} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", background:dark?"#1a1a27":"#f0f2fa", borderRadius:11, border:`1px solid ${T.border2}` }}>
+                        <div style={{ width:28, height:28, borderRadius:"50%", background:"linear-gradient(135deg,#5b5ef4,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#fff", flexShrink:0 }}>
+                          {name.slice(0,2).toUpperCase()}
+                        </div>
+                        <div style={{ flex:1, fontSize:13, fontWeight:600 }}>{name}</div>
+                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          <span style={{ fontSize:13, color:T.muted }}>₹</span>
+                          <input type="number" placeholder="0"
+                            value={customAmounts[name] || ""}
+                            onChange={e=>setCustomAmounts(prev=>({...prev,[name]:e.target.value}))}
+                            style={{ background:T.input, border:`1px solid ${T.border2}`, borderRadius:8, padding:"5px 8px", color:T.text, fontSize:13, width:90, outline:"none", textAlign:"right", fontFamily:"'DM Sans',sans-serif" }}/>
+                        </div>
+                      </div>
+                    ))}
+                    {/* Running total vs bill */}
+                    {(() => {
+                      const entered = gForm.selectedMembers.reduce((s,n)=>s+(parseFloat(customAmounts[n])||0),0);
+                      const total = parseFloat(gForm.totalAmount||0);
+                      const diff = total - entered;
+                      return (
+                        <div style={{ padding:"10px 14px", borderRadius:10, background: Math.abs(diff)<0.01?(dark?"#0d2a1a":"#ecfdf5"):(dark?"#2a0f0f":"#fff0f0"), border:`1px solid ${Math.abs(diff)<0.01?"#10b98140":"#f43f5e40"}`, display:"flex", justifyContent:"space-between", fontSize:12 }}>
+                          <span style={{ color:T.muted }}>Assigned: ₹{entered.toFixed(2)}</span>
+                          <span style={{ fontWeight:700, color: Math.abs(diff)<0.01?"#10b981":"#f43f5e" }}>
+                            {Math.abs(diff)<0.01 ? "✓ Balanced" : diff>0 ? `₹${diff.toFixed(2)} remaining` : `₹${Math.abs(diff).toFixed(2)} over`}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
             )}
             {formError && <div style={{ background:dark?"#2a141a":"#ffe4e8", border:"1px solid #f43f5e44", borderRadius:10, padding:"10px 14px", color:"#f43f5e", fontSize:13 }}>⚠️ {formError}</div>}
@@ -1198,8 +1290,9 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
 
       {view==="detail" && grp && (
         <div>
-          <div style={{ display:"flex", gap:10, marginBottom:18 }}>
+          <div style={{ display:"flex", gap:10, marginBottom:18, flexWrap:"wrap" }}>
             <button className="btn-g" style={{ padding:"8px 16px", fontSize:13 }} onClick={()=>setView("list")}>← All Splits</button>
+            <button className="btn-g" style={{ padding:"8px 16px", fontSize:13 }} onClick={()=>setShowShareModal(true)}>📋 Share Summary</button>
             {currentUser.name === grp.paidBy && (
               <button className="btn-g" style={{ padding:"8px 16px", fontSize:13, color:"#f43f5e", borderColor:"#f43f5e44" }}
                 onClick={()=>setDeleteConfirm(grp.id)}>🗑 Delete Split</button>
@@ -1360,6 +1453,58 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
               <div style={{ color:T.muted, fontSize:13, marginTop:6 }}>Everyone has paid their share for "{grp.title}"</div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── SHARE SUMMARY MODAL ── */}
+      {showShareModal && grp && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.78)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:500, backdropFilter:"blur(6px)" }}
+          onClick={()=>setShowShareModal(false)}>
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:22, padding:28, width:"90%", maxWidth:460, boxShadow:"0 25px 80px #00000080" }}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{ fontFamily:"'Syne',sans-serif", fontWeight:900, fontSize:18, marginBottom:18 }}>📋 Split Summary</div>
+            {/* Preview */}
+            <div style={{ background:dark?"#0e0e17":"#f7f8fc", borderRadius:14, padding:"16px 18px", fontFamily:"monospace", fontSize:12.5, color:T.text, lineHeight:1.8, marginBottom:16, border:`1px solid ${T.border2}`, whiteSpace:"pre-wrap" }}>
+              {[
+                `💸 ${grp.title}`,
+                `📅 Date: ${grp.date}${grp.note ? ` · ${grp.note}` : ""}`,
+                `💰 Total Bill: ₹${grp.total.toLocaleString()}`,
+                `👥 Members: ${grp.members.join(", ")}`,
+                `💳 Paid by: ${grp.paidBy}`,
+                ``,
+                `📊 Payment Status:`,
+                ...(grp.owes || []).map(o => `  ${o.paid ? "✅" : "⏳"} ${o.name}: ₹${o.amount.toFixed(2)} ${o.paid ? "(Paid)" : "(Pending)"}`),
+                ``,
+                `${(grp.owes||[]).every(o=>o.paid) ? "🎉 All settled!" : `⏳ ${(grp.owes||[]).filter(o=>!o.paid).length} payment(s) pending`}`,
+              ].join("
+")}
+            </div>
+            <div style={{ display:"flex", gap:10 }}>
+              <button className="btn" style={{ flex:1 }} onClick={()=>{
+                const text = [
+                  `💸 ${grp.title}`,
+                  `📅 Date: ${grp.date}${grp.note ? ` · ${grp.note}` : ""}`,
+                  `💰 Total Bill: ₹${grp.total.toLocaleString()}`,
+                  `👥 Members: ${grp.members.join(", ")}`,
+                  `💳 Paid by: ${grp.paidBy}`,
+                  ``,
+                  `📊 Payment Status:`,
+                  ...(grp.owes || []).map(o => `  ${o.paid ? "✅" : "⏳"} ${o.name}: ₹${o.amount.toFixed(2)} ${o.paid ? "(Paid)" : "(Pending)"}`),
+                  ``,
+                  `${(grp.owes||[]).every(o=>o.paid) ? "🎉 All settled!" : `⏳ ${(grp.owes||[]).filter(o=>!o.paid).length} payment(s) pending`}`,
+                ].join("
+");
+                if (navigator.share) {
+                  navigator.share({ title: grp.title, text });
+                } else {
+                  navigator.clipboard.writeText(text).then(()=>alert("Copied to clipboard! ✅"));
+                }
+              }}>
+                {navigator.share ? "📤 Share" : "📋 Copy to Clipboard"}
+              </button>
+              <button className="btn-g" style={{ flex:1 }} onClick={()=>setShowShareModal(false)}>Close</button>
+            </div>
+          </div>
         </div>
       )}
 
