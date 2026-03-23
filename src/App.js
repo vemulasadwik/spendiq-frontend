@@ -202,17 +202,7 @@ function AuthScreen({ onLogin, authPage, setAuthPage }) {
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════════
 function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
-  const darkKey = `spendiq_dark_${user?.id || user?.email || "default"}`;
-  const [dark, setDarkRaw] = useState(() => {
-    try { const v = localStorage.getItem(darkKey); return v !== null ? JSON.parse(v) : true; } catch { return true; }
-  });
-  const setDark = (val) => {
-    setDarkRaw(prev => {
-      const next = typeof val === "function" ? val(prev) : val;
-      try { localStorage.setItem(darkKey, JSON.stringify(next)); } catch {}
-      return next;
-    });
-  };
+  const [dark, setDark]           = useState(true);
   const [page, setPage]           = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { w } = useWindowSize();
@@ -327,40 +317,28 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
   const handleQRUpload = async (groupId, memberName, file) => {
     if (!file) return;
     const gid = String(groupId);
-    // Show preview instantly via localStorage
+    // Save to localStorage immediately for instant preview
     const reader = new FileReader();
-    reader.onload = async (ev) => {
-      // Set locally first for instant preview
+    reader.onload = ev => {
       setQrMap(prev => ({
         ...prev,
         [gid]: { ...(prev[gid]||{}), [memberName]: ev.target.result }
       }));
-      // Upload to backend so ALL users can see it
-      try {
-        const token = localStorage.getItem("spendiq_token");
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch(`${API_BASE}/api/splits/${groupId}/qr`, {
-          method: "POST",
-          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: formData,
-        });
-        if (res.ok) {
-          const data = await res.json();
-          // qrImageUrl is now a base64 data URL stored in DB
-          const backendQrUrl = data?.data?.qrImageUrl;
-          if (backendQrUrl) {
-            setQrMap(prev => ({
-              ...prev,
-              [gid]: { ...(prev[gid]||{}), [memberName]: backendQrUrl }
-            }));
-          }
-        } else {
-          console.error("QR upload failed:", res.status);
-        }
-      } catch(e) { console.error("QR backend upload failed:", e); }
     };
     reader.readAsDataURL(file);
+    // Also upload to backend so other users can see it
+    try {
+      const token = localStorage.getItem("spendiq_token");
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${API_BASE}/api/splits/${groupId}/qr`, {
+        method: "POST",
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: formData,
+      });
+      const text = await res.text();
+      console.log("QR uploaded to backend:", text);
+    } catch(e) { console.error("QR backend upload failed:", e); }
   };
 
   const T = dark ? {
@@ -459,7 +437,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
       {/* ── MOBILE TOPBAR ── */}
       {isMobile && (
         <div style={{ position:"fixed", top:0, left:0, right:0, height:56, background:T.sidebar, borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", zIndex:500 }}>
-          <div style={{ fontFamily:"'Syne',sans-serif", fontWeight:900, fontSize:18, background:"linear-gradient(135deg,#5b5ef4,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>💸 SpendIQ Pro</div>
+          <div style={{ fontFamily:"'Syne',sans-serif", fontWeight:900, fontSize:18, background:"linear-gradient(135deg,#5b5ef4,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>💸 SpendIQ</div>
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             <button onClick={()=>setShowBell(v=>!v)} style={{ background:"none", border:"none", cursor:"pointer", position:"relative", padding:4 }}>
               <span style={{ fontSize:20 }}>🔔</span>
@@ -509,7 +487,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
         {/* dark toggle */}
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", marginTop:4 }}>
           <span style={{ fontSize:12.5, color:T.muted }}>{dark?"🌙 Dark":"☀️ Light"}</span>
-          <button onClick={()=>{ const n=!dark; setDark(n); try{localStorage.setItem("spendiq_dark",String(n));}catch{} }} style={{ width:44, height:24, borderRadius:12, background:dark?"#5b5ef4":"#d1d5db", border:"none", cursor:"pointer", position:"relative", transition:"background .2s" }}>
+          <button onClick={()=>setDark(!dark)} style={{ width:44, height:24, borderRadius:12, background:dark?"#5b5ef4":"#d1d5db", border:"none", cursor:"pointer", position:"relative", transition:"background .2s" }}>
             <span style={{ position:"absolute", width:18, height:18, borderRadius:"50%", background:"white", top:3, left:dark?23:3, transition:"left .2s", boxShadow:"0 1px 4px #00000040", display:"block" }}/>
           </button>
         </div>
@@ -932,7 +910,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
   const [gForm, setGForm]         = useState({ title:"", selectedMembers:[], totalAmount:"", paidBy:"", date:"", note:"" });
   const [formError, setFormError] = useState("");
   const [loading, setLoading]     = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState(null); // groupId to delete
 
   // Load splits from backend on mount
   useEffect(() => {
@@ -965,12 +942,12 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
         qrUrl: g.qrImageUrl || null, // backend QR URL
       }));
       setGroups(mapped);
-      // Load QR from backend into qrMap so ALL users see it
+      // Load QR from backend into qrMap so all users see it
       mapped.forEach(g => {
         if (g.qrUrl) {
           setQrMap(prev => {
             const gid = String(g.id);
-            // Always use backend URL — it's the source of truth for all users
+            if (prev[gid]?.[g.paidBy]) return prev; // don't overwrite local
             return { ...prev, [gid]: { ...(prev[gid]||{}), [g.paidBy]: g.qrUrl } };
           });
         }
@@ -1094,7 +1071,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                     <div style={{ fontSize:11, color: pending>0?"#f97316":"#10b981" }}>{pending>0?`${pending} pending`:"All settled ✓"}</div>
                   </div>
                   {currentUser.name === g.paidBy && (
-                    <button className="dbtn" onClick={e=>{ e.stopPropagation(); setDeleteConfirm(g.id); }}>✕</button>
+                    <button className="dbtn" onClick={e=>{ e.stopPropagation(); deleteGroup(g.id); }}>✕</button>
                   )}
                 </div>
               </div>
@@ -1189,7 +1166,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
             <button className="btn-g" style={{ padding:"8px 16px", fontSize:13 }} onClick={()=>setView("list")}>← All Splits</button>
             {currentUser.name === grp.paidBy && (
               <button className="btn-g" style={{ padding:"8px 16px", fontSize:13, color:"#f43f5e", borderColor:"#f43f5e44" }}
-                onClick={()=>setDeleteConfirm(grp.id)}>🗑 Delete Split</button>
+                onClick={()=>{ if(window.confirm("Delete this split?")) deleteGroup(grp.id); }}>🗑 Delete Split</button>
             )}
           </div>
           <div className="card" style={{ marginBottom:16 }}>
@@ -1351,33 +1328,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
               <div style={{ color:T.muted, fontSize:13, marginTop:6 }}>Everyone has paid their share for "{grp.title}"</div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* ── DELETE CONFIRMATION POPUP ── */}
-      {deleteConfirm && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.78)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:500, backdropFilter:"blur(6px)" }}
-          onClick={()=>setDeleteConfirm(null)}>
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:22, padding:30, width:"90%", maxWidth:400, boxShadow:"0 25px 80px #00000080" }}
-            onClick={e=>e.stopPropagation()}>
-            <div style={{ textAlign:"center", marginBottom:20 }}>
-              <div style={{ fontSize:42, marginBottom:10 }}>🗑️</div>
-              <div style={{ fontFamily:"'Syne',sans-serif", fontWeight:900, fontSize:20, color:T.text }}>Delete this split?</div>
-              <div style={{ color:T.muted, fontSize:13, marginTop:8, lineHeight:1.5 }}>
-                This will permanently delete the split and all payment records. This cannot be undone.
-              </div>
-            </div>
-            <div style={{ display:"flex", gap:10, marginTop:8 }}>
-              <button style={{ flex:1, background:T.row, border:`1px solid ${T.border2}`, color:T.muted, padding:"10px 18px", borderRadius:11, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontWeight:500, fontSize:13 }}
-                onClick={()=>setDeleteConfirm(null)}>
-                Cancel
-              </button>
-              <button style={{ flex:1, background:"linear-gradient(135deg,#f43f5e,#e11d48)", border:"none", color:"#fff", padding:"10px 20px", borderRadius:11, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontWeight:600, fontSize:13.5, boxShadow:"0 4px 18px #f43f5e30" }}
-                onClick={()=>{ deleteGroup(deleteConfirm); setDeleteConfirm(null); }}>
-                🗑 Yes, Delete
-              </button>
-            </div>
-          </div>
         </div>
       )}
     </div>
