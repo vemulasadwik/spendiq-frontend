@@ -351,8 +351,10 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
         headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: formData,
       });
+      const text = await res.text();
       if (res.ok) {
-        const data = await res.json();
+        let data;
+        try { data = JSON.parse(text); } catch(e) { data = null; }
         // Backend returns base64 data URL stored in DB — use this for ALL devices
         const backendQrUrl = data?.data?.qrImageUrl;
         if (backendQrUrl) {
@@ -360,9 +362,16 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
             ...prev,
             [gid]: { ...(prev[gid]||{}), [memberName]: backendQrUrl }
           }));
+          // Reload groups so QR shows immediately for all users
+          alert("QR uploaded successfully! ✅");
+        } else {
+          alert("QR uploaded but could not display. Please refresh.");
         }
       } else {
-        alert("Failed to upload QR. Please try again.");
+        // Show actual backend error message
+        let errMsg = "Failed to upload QR.";
+        try { const err = JSON.parse(text); errMsg = err.message || errMsg; } catch(e) {}
+        alert("Error: " + errMsg + " (Status: " + res.status + ")");
       }
     } catch(e) {
       console.error("QR upload failed:", e);
