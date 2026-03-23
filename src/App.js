@@ -1476,8 +1476,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                 ...(grp.owes || []).map(o => `  ${o.paid ? "✅" : "⏳"} ${o.name}: ₹${o.amount.toFixed(2)} ${o.paid ? "(Paid)" : "(Pending)"}`),
                 ``,
                 `${(grp.owes||[]).every(o=>o.paid) ? "🎉 All settled!" : `⏳ ${(grp.owes||[]).filter(o=>!o.paid).length} payment(s) pending`}`,
-              ].join("
-")}
+              ].join("\n")}
             </div>
             <div style={{ display:"flex", gap:10 }}>
               <button className="btn" style={{ flex:1 }} onClick={()=>{
@@ -1492,8 +1491,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                   ...(grp.owes || []).map(o => `  ${o.paid ? "✅" : "⏳"} ${o.name}: ₹${o.amount.toFixed(2)} ${o.paid ? "(Paid)" : "(Pending)"}`),
                   ``,
                   `${(grp.owes||[]).every(o=>o.paid) ? "🎉 All settled!" : `⏳ ${(grp.owes||[]).filter(o=>!o.paid).length} payment(s) pending`}`,
-                ].join("
-");
+                ].join("\n");
                 if (navigator.share) {
                   navigator.share({ title: grp.title, text });
                 } else {
