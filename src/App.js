@@ -405,7 +405,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
         amount: parseFloat(form.amount),
         date: form.date,
         category: form.category,
-        type: form.type.toUpperCase(),
+        type: form.type.toLowerCase(),
         recurring: form.recurring,
       };
       if (editTarget) {
