@@ -51,11 +51,7 @@ const CAT_META = {
   Other:         { color:"#94a3b8", icon:"📦" },
 };
 
-const MONTHLY_DATA = [
-  { month:"Jan", income:45000, expense:18500 },
-  { month:"Feb", income:45000, expense:22100 },
-  { month:"Mar", income:53000, expense:7348  },
-];
+// MONTHLY_DATA is now computed dynamically from real expenses
 
 function exportCSV(expenses) {
   const header = "ID,Title,Amount,Date,Category,Type,Recurring";
@@ -373,12 +369,30 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
     hover:"#edf0fb", ttBg:"#ffffff", navActive:"linear-gradient(135deg,#5b5ef4,#8b5cf6)",
   };
 
-  const marchExp    = expenses.filter(e=>e.type==="expense"&&e.date.startsWith("2026-03"));
-  const marchInc    = expenses.filter(e=>e.type==="income" &&e.date.startsWith("2026-03"));
+  // ── Dynamic current month filter ──────────────────────────────────────────
+  const now = new Date();
+  const currentMonthPrefix = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+
+  const marchExp    = expenses.filter(e=>e.type==="expense"&&e.date.startsWith(currentMonthPrefix));
+  const marchInc    = expenses.filter(e=>e.type==="income" &&e.date.startsWith(currentMonthPrefix));
   const totalSpent  = marchExp.reduce((s,e)=>s+e.amount,0);
   const totalIncome = marchInc.reduce((s,e)=>s+e.amount,0);
   const savings     = totalIncome - totalSpent;
   const budgetPct   = Math.min((totalSpent/budget)*100,100);
+
+  // ── Build last 6 months of data from real expenses ────────────────────────
+  const MONTHLY_DATA = (() => {
+    const months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const prefix = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      const label = d.toLocaleString("default", { month:"short" });
+      const income  = expenses.filter(e=>e.type==="income"  && e.date.startsWith(prefix)).reduce((s,e)=>s+e.amount,0);
+      const expense = expenses.filter(e=>e.type==="expense" && e.date.startsWith(prefix)).reduce((s,e)=>s+e.amount,0);
+      months.push({ month: label, income, expense });
+    }
+    return months;
+  })();
 
   const filtered = useMemo(()=>expenses.filter(e=>{
     if (filterCat!=="All"&&e.category!==filterCat) return false;
@@ -592,7 +606,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 12 : 0, marginBottom:24 }}>
             <div>
               <div style={{ fontFamily:"'Syne',sans-serif", fontWeight:900, fontSize: isMobile ? 22 : 26 }}>Welcome back, {user.name.split(" ")[0]} 👋</div>
-              <div style={{ color:T.muted, fontSize:13, marginTop:4 }}>March 2026 — Financial Overview</div>
+              <div style={{ color:T.muted, fontSize:13, marginTop:4 }}>{now.toLocaleString("default", { month:"long" })} {now.getFullYear()} — Financial Overview</div>
             </div>
             <div style={{ display:"flex", gap:10 }}>
               <button className="btn-g" onClick={()=>exportCSV(expenses)}>⬇ CSV</button>
