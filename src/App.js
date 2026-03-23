@@ -1016,45 +1016,130 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
     }));
   };
 
+  // ── Smart settlement calculator ──────────────────────────────────────────
+  // Given how much each person paid, calculates who owes whom and how much
+  const calcSettlements = (members, paid, totalAmount) => {
+    const perHead = totalAmount / members.length;
+    // net balance: positive = overpaid (creditor), negative = underpaid (debtor)
+    const balances = {};
+    members.forEach(name => {
+      balances[name] = (parseFloat(paid[name]) || 0) - perHead;
+    });
+
+    // Greedy settlement: match debtors with creditors
+    const creditors = Object.entries(balances).filter(([,b]) => b > 0.01).map(([n,b]) => ({ name:n, amount:b }));
+    const debtors   = Object.entries(balances).filter(([,b]) => b < -0.01).map(([n,b]) => ({ name:n, amount:-b }));
+    const settlements = []; // { from, to, amount }
+
+    let ci = 0, di = 0;
+    while (ci < creditors.length && di < debtors.length) {
+      const credit = creditors[ci];
+      const debt   = debtors[di];
+      const amount = Math.min(credit.amount, debt.amount);
+      if (amount > 0.01) settlements.push({ from: debt.name, to: credit.name, amount: parseFloat(amount.toFixed(2)) });
+      credit.amount -= amount;
+      debt.amount   -= amount;
+      if (credit.amount < 0.01) ci++;
+      if (debt.amount  < 0.01) di++;
+    }
+    return settlements; // [{ from: "Person2", to: "Person1", amount: 133 }, ...]
+  };
+
   const handleCreate = async () => {
     setFormError("");
     const memberList = gForm.selectedMembers;
-    if (!gForm.title || !gForm.totalAmount || !gForm.paidBy || !gForm.date) {
+    if (!gForm.title || !gForm.totalAmount || !gForm.date) {
       setFormError("Please fill all required fields."); return;
     }
     if (memberList.length < 2) { setFormError("Select at least 2 members."); return; }
-    if (!memberList.includes(gForm.paidBy)) { setFormError("Paid-by person must be a selected member."); return; }
+
+    // ── EQUAL SPLIT: one payer pays entire bill ───────────────────────────
+    if (splitMode === "equal") {
+      if (!gForm.paidBy || !memberList.includes(gForm.paidBy)) {
+        setFormError("Please select who paid the bill."); return;
+      }
+      setLoading(true);
+      try {
+        const paidByUser = allUsers.find(u => u.name === gForm.paidBy);
+        const memberIds = memberList.map(name => allUsers.find(u => u.name === name)?.id).filter(Boolean);
+        if (!paidByUser) { setFormError("Could not find paid-by user."); return; }
+        const payload = {
+          title: gForm.title,
+          memberUserIds: memberIds,
+          totalAmount: parseFloat(gForm.totalAmount),
+          paidByUserId: paidByUser.id,
+          date: gForm.date,
+          note: gForm.note,
+        };
+        const created = await apiCall("/api/splits", "POST", payload);
+        await loadGroups();
+        addNotificationsForGroup && addNotificationsForGroup(created);
+        setGForm({ title:"", selectedMembers:[], totalAmount:"", paidBy:"", date:"", note:"" });
+        setSplitMode("equal"); setCustomAmounts({});
+        setActiveId(created.id); setView("detail");
+      } catch(e) { setFormError(e.message || "Failed to create split."); }
+      finally { setLoading(false); }
+      return;
+    }
+
+    // ── CUSTOM SPLIT: each person paid a different amount ─────────────────
+    const totalAmount = parseFloat(gForm.totalAmount);
+    const totalPaid = memberList.reduce((s,n) => s + (parseFloat(customAmounts[n])||0), 0);
+    if (Math.abs(totalPaid - totalAmount) > 0.01) {
+      setFormError(`Amounts paid total ₹${totalPaid.toFixed(2)} but bill is ₹${totalAmount.toFixed(2)}. Please adjust.`);
+      return;
+    }
+    // Check all members have an amount
+    const missing = memberList.filter(n => !customAmounts[n] || parseFloat(customAmounts[n]) < 0);
+    if (missing.length > 0) {
+      setFormError(`Please enter how much each person paid (enter 0 if they paid nothing).`);
+      return;
+    }
+
+    // Calculate settlements
+    const settlements = calcSettlements(memberList, customAmounts, totalAmount);
+    if (settlements.length === 0) {
+      setFormError("Everyone paid their equal share — no settlements needed! Use Equal Split instead.");
+      return;
+    }
+
     setLoading(true);
     try {
-      const paidByUser = allUsers.find(u => u.name === gForm.paidBy);
       const memberIds = memberList.map(name => allUsers.find(u => u.name === name)?.id).filter(Boolean);
-      if (!paidByUser) { setFormError("Could not find paid-by user."); setLoading(false); return; }
-      // Validate custom amounts sum if unequal split
-      if (splitMode === "custom") {
-        const total = memberList.reduce((s,n) => s + (parseFloat(customAmounts[n])||0), 0);
-        const expected = parseFloat(gForm.totalAmount);
-        if (Math.abs(total - expected) > 0.01) {
-          setFormError(`Custom amounts total ₹${total.toFixed(2)} but bill is ₹${expected.toFixed(2)}. Please adjust.`);
-          setLoading(false); return;
-        }
+      // Create one split per settlement (from → to)
+      // Each split: paidBy=creditor, amount=settlement amount, members=[debtor, creditor]
+      let lastCreated = null;
+      for (const s of settlements) {
+        const creditorUser = allUsers.find(u => u.name === s.to);
+        const debtorUser   = allUsers.find(u => u.name === s.from);
+        if (!creditorUser || !debtorUser) continue;
+        const payload = {
+          title: `${gForm.title} (${s.from} → ${s.to})`,
+          memberUserIds: memberIds, // keep all members for context
+          totalAmount: s.amount * memberList.length, // approximate total for this sub-split
+          paidByUserId: creditorUser.id,
+          date: gForm.date,
+          note: `Settlement: ${s.from} owes ₹${s.amount.toFixed(2)} to ${s.to}. Original bill: ₹${totalAmount.toLocaleString()}${gForm.note ? ` · ${gForm.note}` : ""}`,
+        };
+        // Override: we want only the debtor to owe, with exact amount
+        // So we create a 2-person split between creditor and debtor
+        const twoPersonPayload = {
+          title: `${gForm.title}`,
+          memberUserIds: [creditorUser.id, debtorUser.id],
+          totalAmount: s.amount * 2, // so perHead = s.amount
+          paidByUserId: creditorUser.id,
+          date: gForm.date,
+          note: `${s.from} owes ₹${s.amount.toFixed(2)} to ${s.to}${gForm.note ? ` · ${gForm.note}` : ""}`,
+        };
+        lastCreated = await apiCall("/api/splits", "POST", twoPersonPayload);
+        addNotificationsForGroup && addNotificationsForGroup(lastCreated);
       }
-      const payload = {
-        title: gForm.title,
-        memberUserIds: memberIds,
-        totalAmount: parseFloat(gForm.totalAmount),
-        paidByUserId: paidByUser.id,
-        date: gForm.date,
-        note: gForm.note,
-      };
-      const created = await apiCall("/api/splits", "POST", payload);
       await loadGroups();
-      addNotificationsForGroup && addNotificationsForGroup(created);
       setGForm({ title:"", selectedMembers:[], totalAmount:"", paidBy:"", date:"", note:"" });
-      setSplitMode("equal");
-      setCustomAmounts({});
-      setActiveId(created.id);
-      setView("detail");
-    } catch(e) { setFormError(e.message || "Failed to create split."); }
+      setSplitMode("equal"); setCustomAmounts({});
+      if (lastCreated) { setActiveId(lastCreated.id); setView("detail"); }
+      else setView("list");
+    } catch(e) { setFormError(e.message || "Failed to create splits."); }
     finally { setLoading(false); }
   };
 
@@ -1199,23 +1284,25 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
               <div><lbl>Total Amount (₹)</lbl><input className="inp" type="number" placeholder="2400" value={gForm.totalAmount} onChange={e=>setGForm({...gForm,totalAmount:e.target.value})}/></div>
               <div><lbl>Date</lbl><input className="inp" type="date" value={gForm.date} onChange={e=>setGForm({...gForm,date:e.target.value})}/></div>
             </div>
-            <div>
-              <lbl>Paid By</lbl>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:8 }}>
-                {gForm.selectedMembers.map(name => {
-                  const sel = gForm.paidBy === name;
-                  return (
-                    <button key={name} onClick={()=>setGForm({...gForm,paidBy:name})}
-                      style={{ padding:"7px 14px", borderRadius:20, border:`2px solid ${sel?"#10b981":T.border2}`,
-                        background:sel?"#10b981":"transparent",
-                        color:sel?"#fff":T.text, fontWeight:600, fontSize:13, cursor:"pointer", transition:"all .15s" }}>
-                      {name}
-                    </button>
-                  );
-                })}
-                {gForm.selectedMembers.length === 0 && <div style={{ fontSize:12, color:T.muted }}>Select members first</div>}
+            {splitMode === "equal" && (
+              <div>
+                <lbl>Paid By</lbl>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:8 }}>
+                  {gForm.selectedMembers.map(name => {
+                    const sel = gForm.paidBy === name;
+                    return (
+                      <button key={name} onClick={()=>setGForm({...gForm,paidBy:name})}
+                        style={{ padding:"7px 14px", borderRadius:20, border:`2px solid ${sel?"#10b981":T.border2}`,
+                          background:sel?"#10b981":"transparent",
+                          color:sel?"#fff":T.text, fontWeight:600, fontSize:13, cursor:"pointer", transition:"all .15s" }}>
+                        {name}
+                      </button>
+                    );
+                  })}
+                  {gForm.selectedMembers.length === 0 && <div style={{ fontSize:12, color:T.muted }}>Select members first</div>}
+                </div>
               </div>
-            </div>
+            )}
             <div><lbl>Note (optional)</lbl><input className="inp" placeholder="Dinner at Barbeque Nation" value={gForm.note} onChange={e=>setGForm({...gForm,note:e.target.value})}/></div>
             {gForm.totalAmount && gForm.selectedMembers.length > 0 && (
               <div>
@@ -1246,32 +1333,67 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                   </div>
                 ) : (
                   <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                    {gForm.selectedMembers.map(name => (
-                      <div key={name} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", background:dark?"#1a1a27":"#f0f2fa", borderRadius:11, border:`1px solid ${T.border2}` }}>
-                        <div style={{ width:28, height:28, borderRadius:"50%", background:"linear-gradient(135deg,#5b5ef4,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#fff", flexShrink:0 }}>
-                          {name.slice(0,2).toUpperCase()}
+                    <div style={{ fontSize:12, color:T.muted, padding:"8px 12px", background:dark?"#1a1a27":"#f0f2fa", borderRadius:10, border:`1px solid ${T.border2}` }}>
+                      💡 Enter how much each person <strong style={{ color:T.text }}>actually paid</strong>. We'll calculate who owes whom automatically.
+                    </div>
+                    {gForm.selectedMembers.map(name => {
+                      const perHead = parseFloat(gForm.totalAmount||0) / Math.max(gForm.selectedMembers.length,1);
+                      const paid = parseFloat(customAmounts[name])||0;
+                      const net = paid - perHead; // positive = overpaid, negative = underpaid
+                      return (
+                        <div key={name} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", background:dark?"#1a1a27":"#f0f2fa", borderRadius:11, border:`1px solid ${T.border2}` }}>
+                          <div style={{ width:28, height:28, borderRadius:"50%", background:"linear-gradient(135deg,#5b5ef4,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#fff", flexShrink:0 }}>
+                            {name.slice(0,2).toUpperCase()}
+                          </div>
+                          <div style={{ flex:1 }}>
+                            <div style={{ fontSize:13, fontWeight:600 }}>{name}</div>
+                            {paid > 0 && (
+                              <div style={{ fontSize:11, color: net > 0.01?"#10b981": net < -0.01?"#f43f5e":T.muted, marginTop:2 }}>
+                                {net > 0.01 ? `↑ Overpaid by ₹${net.toFixed(2)}` : net < -0.01 ? `↓ Underpaid by ₹${Math.abs(net).toFixed(2)}` : "✓ Exact share"}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                            <span style={{ fontSize:13, color:T.muted }}>₹</span>
+                            <input type="number" placeholder="0"
+                              value={customAmounts[name] || ""}
+                              onChange={e=>setCustomAmounts(prev=>({...prev,[name]:e.target.value}))}
+                              style={{ background:T.input, border:`1px solid ${T.border2}`, borderRadius:8, padding:"5px 8px", color:T.text, fontSize:13, width:90, outline:"none", textAlign:"right", fontFamily:"'DM Sans',sans-serif" }}/>
+                          </div>
                         </div>
-                        <div style={{ flex:1, fontSize:13, fontWeight:600 }}>{name}</div>
-                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                          <span style={{ fontSize:13, color:T.muted }}>₹</span>
-                          <input type="number" placeholder="0"
-                            value={customAmounts[name] || ""}
-                            onChange={e=>setCustomAmounts(prev=>({...prev,[name]:e.target.value}))}
-                            style={{ background:T.input, border:`1px solid ${T.border2}`, borderRadius:8, padding:"5px 8px", color:T.text, fontSize:13, width:90, outline:"none", textAlign:"right", fontFamily:"'DM Sans',sans-serif" }}/>
-                        </div>
-                      </div>
-                    ))}
-                    {/* Running total vs bill */}
+                      );
+                    })}
+                    {/* Running total + live settlement preview */}
                     {(() => {
                       const entered = gForm.selectedMembers.reduce((s,n)=>s+(parseFloat(customAmounts[n])||0),0);
                       const total = parseFloat(gForm.totalAmount||0);
                       const diff = total - entered;
+                      const allEntered = gForm.selectedMembers.every(n => customAmounts[n] !== undefined && customAmounts[n] !== "");
+                      const settlements = allEntered && Math.abs(diff) < 0.01
+                        ? calcSettlements(gForm.selectedMembers, customAmounts, total)
+                        : [];
                       return (
-                        <div style={{ padding:"10px 14px", borderRadius:10, background: Math.abs(diff)<0.01?(dark?"#0d2a1a":"#ecfdf5"):(dark?"#2a0f0f":"#fff0f0"), border:`1px solid ${Math.abs(diff)<0.01?"#10b98140":"#f43f5e40"}`, display:"flex", justifyContent:"space-between", fontSize:12 }}>
-                          <span style={{ color:T.muted }}>Assigned: ₹{entered.toFixed(2)}</span>
-                          <span style={{ fontWeight:700, color: Math.abs(diff)<0.01?"#10b981":"#f43f5e" }}>
-                            {Math.abs(diff)<0.01 ? "✓ Balanced" : diff>0 ? `₹${diff.toFixed(2)} remaining` : `₹${Math.abs(diff).toFixed(2)} over`}
-                          </span>
+                        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                          <div style={{ padding:"10px 14px", borderRadius:10, background: Math.abs(diff)<0.01?(dark?"#0d2a1a":"#ecfdf5"):(dark?"#2a0f0f":"#fff0f0"), border:`1px solid ${Math.abs(diff)<0.01?"#10b98140":"#f43f5e40"}`, display:"flex", justifyContent:"space-between", fontSize:12 }}>
+                            <span style={{ color:T.muted }}>Total paid: ₹{entered.toFixed(2)}</span>
+                            <span style={{ fontWeight:700, color: Math.abs(diff)<0.01?"#10b981":"#f43f5e" }}>
+                              {Math.abs(diff)<0.01 ? "✓ Balanced" : diff>0 ? `₹${diff.toFixed(2)} remaining` : `₹${Math.abs(diff).toFixed(2)} over`}
+                            </span>
+                          </div>
+                          {settlements.length > 0 && (
+                            <div style={{ padding:"12px 14px", borderRadius:10, background:dark?"#1a1a3a":"#eceeff", border:`1px solid #5b5ef440` }}>
+                              <div style={{ fontSize:11, color:"#a5b4fc", fontWeight:700, textTransform:"uppercase", letterSpacing:".04em", marginBottom:8 }}>🧮 Calculated Settlements</div>
+                              {settlements.map((s,i) => (
+                                <div key={i} style={{ fontSize:13, color:T.text, marginBottom:4, display:"flex", alignItems:"center", gap:6 }}>
+                                  <span style={{ color:"#f43f5e", fontWeight:600 }}>{s.from}</span>
+                                  <span style={{ color:T.muted }}>pays</span>
+                                  <span style={{ color:"#10b981", fontWeight:700 }}>₹{s.amount.toFixed(2)}</span>
+                                  <span style={{ color:T.muted }}>to</span>
+                                  <span style={{ color:"#22d3ee", fontWeight:600 }}>{s.to}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       );
                     })()}
