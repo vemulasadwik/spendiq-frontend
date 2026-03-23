@@ -1228,12 +1228,12 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
           <div style={{ fontWeight:700, fontSize:15, marginBottom:12 }}>Members & Payment Status</div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:14 }}>
             {grp.owes.map((o,i)=>{
+              // ONE shared QR for the whole split — uploaded once by split owner, visible to all
               const qr = (qrMap[String(grp.id)]||{})[grp.paidBy] || grp.qrUrl;
-              const isOwer      = currentUser.name === o.name;       // this person owes money
-              const isSplitOwner = currentUser.name === grp.paidBy;  // person who paid/created split
-              const canMarkPaid = isOwer || isSplitOwner;            // only ower or owner can mark paid
-              const canUploadQR = isSplitOwner;                      // only split owner uploads QR
-              const canUndo     = isSplitOwner;                      // only split owner can undo
+              const isOwer       = currentUser.name === o.name;      // person who owes
+              const isSplitOwner = currentUser.name === grp.paidBy;  // person who created/paid
+              const canMarkPaid  = isOwer || isSplitOwner;
+              const canUndo      = isSplitOwner;
 
               return (
                 <div key={i} style={{ background:T.card, border:`1px solid ${o.paid?"#10b98140":T.border}`, borderRadius:16, padding:18, transition:"all .2s" }}>
@@ -1253,52 +1253,25 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                   {!o.paid && (
                     <div style={{ borderTop:`1px solid ${T.border2}`, paddingTop:14 }}>
                       {qr ? (
+                        // QR uploaded — show to everyone so they can scan & pay
                         <div style={{ textAlign:"center" }}>
                           <div style={{ fontSize:12, color:T.muted, marginBottom:8 }}>📲 Scan to pay <strong style={{ color:T.text }}>{grp.paidBy}</strong></div>
                           <img src={qr} alt="QR" style={{ width:130, height:130, borderRadius:10, border:`2px solid ${T.border2}`, objectFit:"cover" }}/>
                           <div style={{ marginTop:8, padding:"8px 12px", background:dark?"#1a1a27":"#f0f4ff", borderRadius:9, fontSize:12, color:T.accent, fontWeight:600 }}>
                             Pay ₹{o.amount.toFixed(2)} to {grp.paidBy}
                           </div>
-                          <div style={{ display:"flex", gap:8, marginTop:10 }}>
-                            {canMarkPaid && (
-                              <button className="btn" style={{ flex:1, fontSize:12, padding:"8px" }} onClick={()=>markPaid(grp.id,o.name)}>✓ Mark Paid</button>
-                            )}
-                            {canUploadQR && (
-                              <label style={{ flex:1, cursor:"pointer" }}>
-                                <div className="btn-g" style={{ textAlign:"center", padding:"8px", fontSize:12, borderRadius:11, border:`1px solid ${T.border2}`, color:T.muted }}>📷 Change QR</div>
-                                <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleQRUpload(grp.id,grp.paidBy,e.target.files[0])}/>
-                              </label>
-                            )}
-                            {!canMarkPaid && (
-                              <div style={{ flex:1, textAlign:"center", fontSize:12, color:T.muted, padding:"8px", background:T.row, borderRadius:10, border:`1px solid ${T.border2}` }}>
-                                🔒 Waiting for {o.name} to pay
-                              </div>
-                            )}
-                          </div>
+                          {canMarkPaid && (
+                            <button className="btn" style={{ width:"100%", marginTop:10, fontSize:12, padding:"8px" }} onClick={()=>markPaid(grp.id,o.name)}>✓ Mark Paid</button>
+                          )}
                         </div>
                       ) : (
+                        // No QR yet — show waiting message; only mark paid is available
                         <div>
                           <div style={{ fontSize:12, color:T.muted, marginBottom:10, textAlign:"center" }}>
-                            {canUploadQR
-                              ? `Upload your QR so ${o.name} can scan & pay you`
-                              : `Waiting for ${grp.paidBy} to upload QR code`}
+                            ⏳ Waiting for <strong style={{ color:T.text }}>{grp.paidBy}</strong> to upload their QR code
                           </div>
-                          {canUploadQR ? (
-                            <>
-                              <label style={{ cursor:"pointer", display:"block" }}>
-                                <div style={{ border:`2px dashed ${T.border2}`, borderRadius:12, padding:"18px", textAlign:"center", transition:"border-color .18s" }}
-                                  onMouseOver={e=>e.currentTarget.style.borderColor=T.accent}
-                                  onMouseOut={e=>e.currentTarget.style.borderColor=T.border2}>
-                                  <div style={{ fontSize:28, marginBottom:6 }}>📷</div>
-                                  <div style={{ fontSize:13, fontWeight:600, color:T.text }}>Upload Your QR Code</div>
-                                  <div style={{ fontSize:11.5, color:T.muted, marginTop:4 }}>PNG, JPG · UPI / GPay / PhonePe</div>
-                                </div>
-                                <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleQRUpload(grp.id,grp.paidBy,e.target.files[0])}/>
-                              </label>
-                              <button className="btn" style={{ width:"100%", marginTop:10, fontSize:12, padding:"9px" }} onClick={()=>markPaid(grp.id,o.name)}>✓ Mark as Paid (cash)</button>
-                            </>
-                          ) : canMarkPaid ? (
-                            <button className="btn" style={{ width:"100%", fontSize:12, padding:"9px" }} onClick={()=>markPaid(grp.id,o.name)}>✓ Mark as Paid</button>
+                          {canMarkPaid ? (
+                            <button className="btn" style={{ width:"100%", fontSize:12, padding:"9px" }} onClick={()=>markPaid(grp.id,o.name)}>✓ Mark as Paid (cash)</button>
                           ) : (
                             <div style={{ textAlign:"center", fontSize:12, color:T.muted, padding:"12px", background:T.row, borderRadius:10, border:`1px solid ${T.border2}` }}>
                               🔒 Only {o.name} or {grp.paidBy} can mark this as paid
@@ -1341,6 +1314,34 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                   ₹{(grp.owes.filter(o=>o.paid).length * grp.perHead).toFixed(2)}
                 </div>
               </div>
+
+              {/* ── QR UPLOAD — only visible to split owner (paidBy) ── */}
+              {currentUser.name === grp.paidBy && (
+                <div style={{ marginTop:14, borderTop:"1px solid #10b98130", paddingTop:14 }}>
+                  {((qrMap[String(grp.id)]||{})[grp.paidBy] || grp.qrUrl) ? (
+                    <div style={{ textAlign:"center" }}>
+                      <div style={{ fontSize:12, color:"#10b981", marginBottom:8, fontWeight:600 }}>✅ Your QR is uploaded — members can scan it</div>
+                      <img src={(qrMap[String(grp.id)]||{})[grp.paidBy] || grp.qrUrl} alt="Your QR"
+                        style={{ width:110, height:110, borderRadius:10, border:"2px solid #10b98160", objectFit:"cover" }}/>
+                      <label style={{ display:"block", marginTop:10, cursor:"pointer" }}>
+                        <div style={{ fontSize:12, color:"#10b981", padding:"7px 12px", border:"1px solid #10b98160", borderRadius:9, textAlign:"center" }}>📷 Replace QR</div>
+                        <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleQRUpload(String(grp.id), grp.paidBy, e.target.files[0])}/>
+                      </label>
+                    </div>
+                  ) : (
+                    <label style={{ cursor:"pointer", display:"block" }}>
+                      <div style={{ border:"2px dashed #10b98160", borderRadius:12, padding:"16px", textAlign:"center", transition:"border-color .18s" }}
+                        onMouseOver={e=>e.currentTarget.style.borderColor="#10b981"}
+                        onMouseOut={e=>e.currentTarget.style.borderColor="#10b98160"}>
+                        <div style={{ fontSize:24, marginBottom:5 }}>📷</div>
+                        <div style={{ fontSize:13, fontWeight:600, color:"#10b981" }}>Upload Your QR Code</div>
+                        <div style={{ fontSize:11.5, color:"#10b981aa", marginTop:3 }}>So others can scan and pay you</div>
+                      </div>
+                      <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleQRUpload(String(grp.id), grp.paidBy, e.target.files[0])}/>
+                    </label>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
