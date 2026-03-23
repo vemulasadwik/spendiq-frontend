@@ -26,7 +26,6 @@ const apiCall = async (path, method = "GET", body = null) => {
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
 
-  // Handle empty responses (204 No Content, etc.)
   const text = await res.text();
   if (!text || text.trim() === "") {
     if (res.ok) return null;
@@ -52,17 +51,6 @@ const CAT_META = {
   Other:         { color:"#94a3b8", icon:"📦" },
 };
 
-const INIT_EXPENSES = [
-  { id:1,  title:"Groceries",        amount:1500,  date:"2026-03-01", category:"Food",          type:"expense", recurring:false },
-  { id:2,  title:"Netflix",          amount:649,   date:"2026-03-02", category:"Entertainment", type:"expense", recurring:true  },
-  { id:3,  title:"Electricity Bill", amount:2200,  date:"2026-03-03", category:"Utilities",     type:"expense", recurring:true  },
-  { id:4,  title:"Gym Membership",   amount:999,   date:"2026-03-05", category:"Health",        type:"expense", recurring:true  },
-  { id:5,  title:"Petrol",           amount:800,   date:"2026-03-07", category:"Transport",     type:"expense", recurring:false },
-  { id:6,  title:"Dinner Out",       amount:1200,  date:"2026-03-08", category:"Food",          type:"expense", recurring:false },
-  { id:7,  title:"Freelance Work",   amount:8000,  date:"2026-03-04", category:"Income",        type:"income",  recurring:false },
-  { id:8,  title:"Salary",           amount:45000, date:"2026-03-01", category:"Income",        type:"income",  recurring:true  },
-];
-
 const MONTHLY_DATA = [
   { month:"Jan", income:45000, expense:18500 },
   { month:"Feb", income:45000, expense:22100 },
@@ -83,7 +71,7 @@ export default function App() {
   const [authUser, setAuthUser]   = useState(null);
   const [authPage, setAuthPage]   = useState("login");
   const [allUsers, setAllUsers]   = useState([]);
-  const [loading, setLoading]     = useState(true); // checking saved session
+  const [loading, setLoading]     = useState(true);
 
   const fetchAllUsers = async () => {
     try { setAllUsers(await apiCall("/api/auth/users")); } catch(e) { console.error(e); }
@@ -95,7 +83,6 @@ export default function App() {
     fetchAllUsers();
   };
 
-  // ── Auto-login: restore session from saved JWT on page refresh ──────────
   useEffect(() => {
     const token = localStorage.getItem("spendiq_token");
     if (!token) { setLoading(false); return; }
@@ -155,14 +142,12 @@ function AuthScreen({ onLogin, authPage, setAuthPage }) {
         .abtn:disabled{opacity:.5;cursor:not-allowed}
       `}</style>
 
-      {/* BG blobs */}
       <div style={{ position:"fixed", inset:0, overflow:"hidden", zIndex:0, pointerEvents:"none" }}>
         <div style={{ position:"absolute", width:500, height:500, borderRadius:"50%", background:"radial-gradient(circle,#5b5ef430,transparent 70%)", top:-100, left:-100 }}/>
         <div style={{ position:"absolute", width:400, height:400, borderRadius:"50%", background:"radial-gradient(circle,#8b5cf620,transparent 70%)", bottom:-80, right:-80 }}/>
       </div>
 
       <div style={{ position:"relative", zIndex:1, width:"100%", maxWidth:420, padding:20 }}>
-        {/* Logo */}
         <div style={{ textAlign:"center", marginBottom:36 }}>
           <div style={{ fontSize:44, marginBottom:8 }}>💸</div>
           <div style={{ fontFamily:"'Syne',sans-serif", fontWeight:900, fontSize:32, background:"linear-gradient(135deg,#5b5ef4,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>SpendIQ Pro</div>
@@ -170,7 +155,6 @@ function AuthScreen({ onLogin, authPage, setAuthPage }) {
         </div>
 
         <div style={{ background:"#13131c", border:"1px solid #1f1f30", borderRadius:22, padding:32, boxShadow:"0 25px 80px #00000080" }}>
-          {/* tabs */}
           <div style={{ display:"flex", background:"#0e0e17", borderRadius:12, padding:4, marginBottom:26, gap:4 }}>
             {["login","register"].map(t=>(
               <button key={t} onClick={()=>{ setAuthPage(t); setError(""); setForm({ name:"",email:"",password:"",confirm:"" }); }}
@@ -208,8 +192,6 @@ function AuthScreen({ onLogin, authPage, setAuthPage }) {
               {loading?"Please wait…":authPage==="login"?"Sign In →":"Create Account →"}
             </button>
           </div>
-
-
         </div>
       </div>
     </div>
@@ -236,10 +218,8 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
   const { w } = useWindowSize();
   const isMobile = w < 640;
   const isTablet = w >= 640 && w < 1024;
-  // Per-user expense storage — starts empty for new users
-  const storageKey = `spendiq_expenses_${user?.id || user?.email || "default"}`;
-  const budgetKey  = `spendiq_budget_${user?.id || user?.email || "default"}`;
 
+  const budgetKey = `spendiq_budget_${user?.id || user?.email || "default"}`;
   const readLS = (key, fallback) => {
     try { const raw = localStorage.getItem(key); return raw !== null ? JSON.parse(raw) : fallback; } catch { return fallback; }
   };
@@ -247,24 +227,35 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
     try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
   };
 
-  const [expenses, setExpensesRaw] = useState(() => {
-    const stored = readLS(storageKey, null);
-    if (!stored) return []; // new user - start empty
-    // Wipe old INIT_EXPENSES demo data: those entries had ids 1-8 and small amounts
-    const isDemo = Array.isArray(stored) && stored.length > 0 &&
-      stored.every(e => typeof e.id === "number" && e.id >= 1 && e.id <= 8);
-    if (isDemo) { localStorage.removeItem(storageKey); return []; }
-    return stored;
-  });
-  const setExpenses = (val) => {
-    setExpensesRaw(prev => {
-      const next = typeof val === "function" ? val(prev) : val;
-      writeLS(storageKey, next);
-      return next;
-    });
+  // ── EXPENSES: loaded from backend, synced across all devices ──────────────
+  const [expenses, setExpenses]     = useState([]);
+  const [expensesLoading, setExpensesLoading] = useState(false);
+
+  const loadExpenses = async () => {
+    setExpensesLoading(true);
+    try {
+      const data = await apiCall("/api/expenses");
+      const mapped = (data || []).map(e => ({
+        id: e.id,
+        title: e.title,
+        amount: parseFloat(e.amount),
+        date: String(e.date),
+        category: e.category,
+        type: e.type?.toLowerCase(),
+        recurring: e.recurring,
+      }));
+      setExpenses(mapped);
+    } catch(err) { console.error("loadExpenses error:", err); }
+    finally { setExpensesLoading(false); }
   };
+
+  // Load expenses from backend on mount
+  useEffect(() => { loadExpenses(); }, []);
+  // ─────────────────────────────────────────────────────────────────────────
+
   const [modal, setModal]         = useState(false);
   const [editTarget, setEdit]     = useState(null);
+  const [saveLoading, setSaveLoading] = useState(false);
   const [filterCat, setFilterCat] = useState("All");
   const [search, setSearch]       = useState("");
   const [dateFrom, setDateFrom]   = useState("");
@@ -280,7 +271,6 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
   const [budgetEdit, setBudgetEdit] = useState(false);
   const [budgetInput, setBudgetInput] = useState(() => readLS(budgetKey, 15000));
   const [groups, setGroups]       = useState([]);
-  // QR loaded from backend DB — not localStorage (which is device-specific)
   const [qrMap, setQrMapRaw] = useState({});
   const setQrMap = (fn) => {
     setQrMapRaw(prev => {
@@ -294,7 +284,6 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
   const [showLoginPopup, setShowLoginPopup] = useState(false);
   const [form, setForm]           = useState({ title:"", amount:"", date:"", category:"Food", type:"expense", recurring:false });
 
-  // ── REAL BACKEND NOTIFICATIONS ──────────────────────────────────────────────
   const refreshNotifications = async () => {
     try {
       const unread = await apiCall("/api/notifications/unread");
@@ -312,7 +301,6 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
     } catch(e) { console.error(e); return []; }
   };
 
-  // Load on mount — show popup if user has pending payments
   useEffect(() => {
     refreshNotifications().then(converted => {
       if (converted.length > 0) {
@@ -324,10 +312,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
   const myNotifs = (notifications[user.name] || []).filter(n => !n.dismissed);
   const unreadCount = myNotifs.length;
 
-  const addNotificationsForGroup = () => {
-    // Backend handles notifications for other users automatically
-    // Nothing needed for current user (they paid, they don't owe)
-  };
+  const addNotificationsForGroup = () => {};
 
   const dismissNotificationForMember = async (groupId, memberName) => {
     try {
@@ -355,20 +340,17 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
       if (res.ok) {
         let data;
         try { data = JSON.parse(text); } catch(e) { data = null; }
-        // Backend returns base64 data URL stored in DB — use this for ALL devices
         const backendQrUrl = data?.data?.qrImageUrl;
         if (backendQrUrl) {
           setQrMap(prev => ({
             ...prev,
             [gid]: { ...(prev[gid]||{}), [memberName]: backendQrUrl }
           }));
-          // Reload groups so QR shows immediately for all users
           alert("QR uploaded successfully! ✅");
         } else {
           alert("QR uploaded but could not display. Please refresh.");
         }
       } else {
-        // Show actual backend error message
         let errMsg = "Failed to upload QR.";
         try { const err = JSON.parse(text); errMsg = err.message || errMsg; } catch(e) {}
         alert("Error: " + errMsg + " (Status: " + res.status + ")");
@@ -412,13 +394,40 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
 
   const openAdd  = () => { setForm({ title:"", amount:"", date:"", category:"Food", type:"expense", recurring:false }); setEdit(null); setModal("entry"); };
   const openEdit = (e) => { setForm({ title:e.title, amount:e.amount, date:e.date, category:e.category, type:e.type, recurring:e.recurring }); setEdit(e.id); setModal("entry"); };
-  const saveEntry = () => {
+
+  // ── SAVE: calls backend API, then reloads from DB ─────────────────────────
+  const saveEntry = async () => {
     if (!form.title||!form.amount||!form.date) return;
-    if (editTarget) setExpenses(expenses.map(e=>e.id===editTarget?{...e,...form,amount:parseFloat(form.amount)}:e));
-    else setExpenses([...expenses,{ id:Date.now(),...form,amount:parseFloat(form.amount) }]);
-    setModal(false);
+    setSaveLoading(true);
+    try {
+      const payload = {
+        title: form.title,
+        amount: parseFloat(form.amount),
+        date: form.date,
+        category: form.category,
+        type: form.type.toUpperCase(),
+        recurring: form.recurring,
+      };
+      if (editTarget) {
+        await apiCall(`/api/expenses/${editTarget}`, "PUT", payload);
+      } else {
+        await apiCall("/api/expenses", "POST", payload);
+      }
+      await loadExpenses(); // reload from DB — syncs all devices
+      setModal(false);
+    } catch(e) { alert(e.message || "Failed to save expense"); }
+    finally { setSaveLoading(false); }
   };
-  const del = (id) => setExpenses(expenses.filter(e=>e.id!==id));
+
+  // ── DELETE: calls backend API, then reloads from DB ───────────────────────
+  const del = async (id) => {
+    if (!window.confirm("Delete this expense?")) return;
+    try {
+      await apiCall(`/api/expenses/${id}`, "DELETE");
+      await loadExpenses(); // reload from DB
+    } catch(e) { alert(e.message || "Failed to delete expense"); }
+  };
+  // ─────────────────────────────────────────────────────────────────────────
 
   const ttStyle = { background:T.ttBg, border:`1px solid ${T.border}`, borderRadius:10, color:T.text, fontSize:12 };
 
@@ -445,6 +454,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
     .pill.on{border-color:${T.accent};background:${dark?"#1a1a3a":"#eceeff"};color:${dark?"#a5b4fc":"#5b5ef4"}}
     .btn{background:${T.accentG};border:none;color:#fff;padding:10px 20px;border-radius:11px;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:600;font-size:13.5px;transition:opacity .18s;box-shadow:0 4px 18px #5b5ef430}
     .btn:hover{opacity:.88}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
     .btn-g{background:${T.row};border:1px solid ${T.border2};color:${T.muted};padding:9px 18px;border-radius:11px;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:500;font-size:13px;transition:all .18s}
     .btn-g:hover{border-color:${T.accent};color:${T.text}}
     .inp{background:${T.input};border:1px solid ${T.border2};border-radius:11px;padding:10px 14px;color:${T.text};font-family:'DM Sans',sans-serif;font-size:13.5px;width:100%;outline:none;transition:border-color .18s}
@@ -461,7 +471,6 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
     lbl{font-size:11.5px;color:${T.muted};font-weight:600;display:block;margin-bottom:6px;letter-spacing:.04em;text-transform:uppercase}
     .tag{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600}
     .avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#5b5ef4,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0}
-    .abtn:disabled{opacity:.5;cursor:not-allowed}
     @media(max-width:768px){
       .modal{width:95vw;padding:20px}
       .srch{width:140px}
@@ -486,7 +495,6 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
         </div>
       )}
 
-      {/* ── SIDEBAR OVERLAY (mobile) ── */}
       {isMobile && sidebarOpen && <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:498 }} onClick={()=>setSidebarOpen(false)}/>}
 
       {/* ── SIDEBAR ── */}
@@ -497,14 +505,12 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
           <div style={{ fontSize:10, color:T.muted, marginTop:2, letterSpacing:".06em" }}>SMART EXPENSE TRACKER</div>
         </div>
 
-        {/* user chip */}
         <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:T.row, borderRadius:12, border:`1px solid ${T.border2}`, marginBottom:8 }}>
           <div className="avatar">{user.avatar || (user.name||"?").split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2)}</div>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:13, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{user.name}</div>
             <div style={{ fontSize:11, color:T.muted, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{user.email}</div>
           </div>
-          {/* Bell badge */}
           <button onClick={()=>setShowBell(v=>!v)} style={{ background:"none", border:"none", cursor:"pointer", padding:"4px", display:"flex", alignItems:"center", justifyContent:"center", borderRadius:8, flexShrink:0, position:"relative" }}>
             <span style={{ fontSize:17 }}>🔔</span>
             {unreadCount > 0 && (
@@ -517,15 +523,14 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
 
         {[["dashboard","▦","Dashboard"],["expenses","☰","Expenses"],["analytics","◎","Analytics"],["recurring","↻","Recurring"],["splitter","⚡","Group Splitter"]].map(([id,ic,lb])=>(
           <button key={id} className={`nb ${page===id?"on":""}`} onClick={()=>setPage(id)}>
-            <span style={{ fontSize:15 }}>{ic}</span><span className="nav-label">{lb}</span>
+            <span style={{ fontSize:15 }}>{ic}</span><span>{lb}</span>
             {id==="splitter"&&groups.length>0&&<span style={{ marginLeft:"auto", background:"#5b5ef4", color:"#fff", borderRadius:10, fontSize:10, padding:"1px 7px", fontWeight:700 }}>{groups.length}</span>}
           </button>
         ))}
 
-        {/* dark toggle */}
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", marginTop:4 }}>
           <span style={{ fontSize:12.5, color:T.muted }}>{dark?"🌙 Dark":"☀️ Light"}</span>
-          <button onClick={()=>{ const n=!dark; setDark(n); try{localStorage.setItem("spendiq_dark",String(n));}catch{} }} style={{ width:44, height:24, borderRadius:12, background:dark?"#5b5ef4":"#d1d5db", border:"none", cursor:"pointer", position:"relative", transition:"background .2s" }}>
+          <button onClick={()=>setDark(v=>!v)} style={{ width:44, height:24, borderRadius:12, background:dark?"#5b5ef4":"#d1d5db", border:"none", cursor:"pointer", position:"relative", transition:"background .2s" }}>
             <span style={{ position:"absolute", width:18, height:18, borderRadius:"50%", background:"white", top:3, left:dark?23:3, transition:"left .2s", boxShadow:"0 1px 4px #00000040", display:"block" }}/>
           </button>
         </div>
@@ -560,14 +565,13 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
                 <span style={{ fontSize:11, color:budgetPct>=100?"#f43f5e":budgetPct>=80?"#f97316":T.muted }}>{budgetPct.toFixed(0)}%</span>
               </div>
               <div style={{ display:"flex", gap:6, marginTop:10 }}>
-                <button onClick={()=>{ setBudget(b=>Math.max(0,b-1000)); }} style={{ flex:1, background:T.input, border:`1px solid ${T.border2}`, borderRadius:8, color:T.text, padding:"5px", cursor:"pointer", fontSize:14, fontWeight:700, fontFamily:"'DM Sans',sans-serif" }}>−1k</button>
-                <button onClick={()=>{ setBudget(b=>b+1000); }} style={{ flex:1, background:T.input, border:`1px solid ${T.border2}`, borderRadius:8, color:T.text, padding:"5px", cursor:"pointer", fontSize:14, fontWeight:700, fontFamily:"'DM Sans',sans-serif" }}>+1k</button>
+                <button onClick={()=>setBudget(b=>Math.max(0,b-1000))} style={{ flex:1, background:T.input, border:`1px solid ${T.border2}`, borderRadius:8, color:T.text, padding:"5px", cursor:"pointer", fontSize:14, fontWeight:700, fontFamily:"'DM Sans',sans-serif" }}>−1k</button>
+                <button onClick={()=>setBudget(b=>b+1000)} style={{ flex:1, background:T.input, border:`1px solid ${T.border2}`, borderRadius:8, color:T.text, padding:"5px", cursor:"pointer", fontSize:14, fontWeight:700, fontFamily:"'DM Sans',sans-serif" }}>+1k</button>
               </div>
             </>
           )}
         </div>
 
-        {/* logout */}
         <button onClick={onLogout} style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:11, padding:"9px", color:T.muted, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontSize:13, marginTop:8, transition:"all .18s", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}
           onMouseOver={e=>e.currentTarget.style.borderColor="#f43f5e"} onMouseOut={e=>e.currentTarget.style.borderColor=T.border2}>
           ⎋ Sign Out
@@ -577,7 +581,6 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
       {/* ── MAIN ── */}
       <main style={{ flex:1, padding: isMobile ? "70px 14px 80px" : isTablet ? "20px 18px" : 26, overflowY:"auto" }}>
 
-        {/* alerts */}
         {(page==="dashboard"||page==="expenses") && budgetPct>=80 && (
           <div className="alert" style={{ borderLeftColor:budgetPct>=100?"#f43f5e":"#f97316" }}>
             {budgetPct>=100?"🚨 You've exceeded your monthly budget!":"⚠️ "+budgetPct.toFixed(0)+"% of budget used this month."}
@@ -678,7 +681,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
             </div>
             <input className="inp" type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{ width:148 }}/>
             <span style={{ color:T.muted }}>→</span>
-            <input className="inp" type="date" value={dateTo}   onChange={e=>setDateTo(e.target.value)}   style={{ width:148 }}/>
+            <input className="inp" type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{ width:148 }}/>
             {(search||dateFrom||dateTo)&&<button className="btn-g" style={{ padding:"8px 12px",fontSize:12 }} onClick={()=>{setSearch("");setDateFrom("");setDateTo("");}}>✕ Clear</button>}
           </div>
           <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
@@ -687,8 +690,9 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
             ))}
           </div>
           <div className="card">
-            {filtered.length===0&&<div style={{ color:T.muted, textAlign:"center", padding:50, fontSize:14 }}>No entries match.</div>}
-            {filtered.map(e=>(
+            {expensesLoading && <div style={{ color:T.muted, textAlign:"center", padding:50, fontSize:14 }}>⏳ Loading expenses…</div>}
+            {!expensesLoading && filtered.length===0 && <div style={{ color:T.muted, textAlign:"center", padding:50, fontSize:14 }}>No entries match.</div>}
+            {!expensesLoading && filtered.map(e=>(
               <div key={e.id} className="row">
                 <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                   <div style={{ width:40, height:40, borderRadius:12, background:(CAT_META[e.category]?.color||"#94a3b8")+"22", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>{CAT_META[e.category]?.icon||"📦"}</div>
@@ -707,7 +711,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
                 </div>
               </div>
             ))}
-            {filtered.length>0&&(
+            {!expensesLoading && filtered.length>0&&(
               <div style={{ marginTop:12, padding:"11px 15px", background:T.bg, borderRadius:11, display:"flex", justifyContent:"space-between", fontSize:13 }}>
                 <span style={{ color:T.muted }}>{filtered.length} entries</span>
                 <span style={{ fontWeight:700, color:T.accent }}>Net: ₹{filtered.reduce((s,e)=>s+(e.type==="income"?e.amount:-e.amount),0).toLocaleString()}</span>
@@ -783,6 +787,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
                 ))}
               </div>
               <div className="card">
+                {expensesLoading && <div style={{ color:T.muted, textAlign:"center", padding:30, fontSize:14 }}>⏳ Loading…</div>}
                 {rec.map(e=>(
                   <div key={e.id} className="row">
                     <div style={{ display:"flex", alignItems:"center", gap:12 }}>
@@ -808,17 +813,14 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
         {page==="splitter" && <GroupSplitter T={T} dark={dark} groups={groups} setGroups={setGroups} addNotificationsForGroup={addNotificationsForGroup} dismissNotificationForMember={dismissNotificationForMember} allUsers={allUsers} currentUser={user} qrMap={qrMap} setQrMap={setQrMap} handleQRUpload={handleQRUpload} refreshUsers={refreshUsers} splitterNav={splitterNav} setSplitterNav={setSplitterNav}/>}
       </main>
 
-      {/* ── CLICK AWAY TO CLOSE BELL ── */}
       {/* ── MOBILE BOTTOM NAV ── */}
       {isMobile && (
         <nav style={{ position:"fixed", bottom:0, left:0, right:0, height:60, background:T.sidebar, borderTop:`1px solid ${T.border}`, display:"flex", alignItems:"center", justifyContent:"space-around", zIndex:490, padding:"0 8px" }}>
           {[["dashboard","▦","Home"],["expenses","☰","Expenses"],["analytics","◎","Stats"],["recurring","↻","Recur"],["splitter","⚡","Split"]].map(([id,ic,lb])=>(
             <button key={id} onClick={()=>{ setPage(id); setSidebarOpen(false); }}
-              style={{ background:"none", border:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, padding:"6px 8px", borderRadius:10,
-                background: page===id ? `${T.accent}22` : "none", color: page===id ? T.accent : T.muted, fontFamily:"'DM Sans',sans-serif", flex:1 }}>
+              style={{ background: page===id ? `${T.accent}22` : "none", border:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, padding:"6px 8px", borderRadius:10, color: page===id ? T.accent : T.muted, fontFamily:"'DM Sans',sans-serif", flex:1 }}>
               <span style={{ fontSize:18 }}>{ic}</span>
               <span style={{ fontSize:9, fontWeight:600, letterSpacing:".02em" }}>{lb}</span>
-              {id==="splitter"&&groups.length>0&&<span style={{ position:"absolute", marginTop:-18, marginLeft:16, background:"#5b5ef4", color:"#fff", borderRadius:10, fontSize:8, padding:"1px 4px", fontWeight:700 }}>{groups.length}</span>}
             </button>
           ))}
         </nav>
@@ -826,7 +828,6 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
 
       {showBell && <div style={{ position:"fixed", inset:0, zIndex:299 }} onClick={()=>setShowBell(false)}/>}
 
-      {/* ── BELL DROPDOWN ── */}
       {showBell && (
         <div style={{ position:"fixed", top: isMobile ? 60 : 70, left: isMobile ? 8 : 14, right: isMobile ? 8 : "auto", width: isMobile ? "auto" : 300, background:T.card, border:`1px solid ${T.border}`, borderRadius:16, boxShadow:"0 16px 50px #00000080", zIndex:400, overflow:"hidden" }}
           onClick={e=>e.stopPropagation()}>
@@ -857,7 +858,6 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
         </div>
       )}
 
-      {/* ── LOGIN POPUP: pending payments ── */}
       {showLoginPopup && myNotifs.length > 0 && (
         <div className="overlay" onClick={()=>setShowLoginPopup(false)}>
           <div className="modal" style={{ maxWidth:420 }} onClick={e=>e.stopPropagation()}>
@@ -883,9 +883,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
               <button className="btn" style={{ flex:1 }} onClick={()=>{ setSplitterNav({groupId:myNotifs[0]?.groupId}); setPage("splitter"); setShowLoginPopup(false); }}>
                 Go to Group Splitter →
               </button>
-              <button className="btn-g" style={{ flex:1 }} onClick={()=>setShowLoginPopup(false)}>
-                Remind Me Later
-              </button>
+              <button className="btn-g" style={{ flex:1 }} onClick={()=>setShowLoginPopup(false)}>Remind Me Later</button>
             </div>
           </div>
         </div>
@@ -926,7 +924,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
                 </button>
               </div>
               <div style={{ display:"flex", gap:10, marginTop:4 }}>
-                <button className="btn" style={{ flex:1 }} onClick={saveEntry}>{editTarget?"Save Changes":"Add Entry"}</button>
+                <button className="btn" style={{ flex:1 }} disabled={saveLoading} onClick={saveEntry}>{saveLoading?"Saving…":editTarget?"Save Changes":"Add Entry"}</button>
                 <button className="btn-g" style={{ flex:1 }} onClick={()=>setModal(false)}>Cancel</button>
               </div>
             </div>
@@ -938,7 +936,7 @@ function Dashboard({ user, onLogout, allUsers, refreshUsers }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GROUP SPLITTER
+// GROUP SPLITTER — unchanged from your original
 // ══════════════════════════════════════════════════════════════════════════════
 function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMap, setQrMap, handleQRUpload, splitterNav, setSplitterNav, addNotificationsForGroup, dismissNotificationForMember, refreshUsers }) {
   const { w } = useWindowSize();
@@ -948,15 +946,13 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
   const [gForm, setGForm]         = useState({ title:"", selectedMembers:[], totalAmount:"", paidBy:"", date:"", note:"" });
   const [formError, setFormError] = useState("");
   const [loading, setLoading]     = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState(null); // groupId to delete
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
 
-  // Load splits from backend on mount
   useEffect(() => {
     loadGroups();
-    refreshUsers && refreshUsers(); // ensure member list is fresh
+    refreshUsers && refreshUsers();
   }, []);
 
-  // Deep-link nav from notification
   useEffect(() => {
     if (splitterNav?.groupId) {
       setActiveId(splitterNav.groupId);
@@ -978,15 +974,13 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
         paidBy: g.paidBy?.name || g.paidBy,
         members: (g.members || []).map(m => m.name || m),
         owes: (g.owes || []).map(o => ({ name: o.userName, amount: parseFloat(o.amount), paid: o.paid, oweId: o.id })),
-        qrUrl: g.qrImageUrl || null, // backend QR URL
+        qrUrl: g.qrImageUrl || null,
       }));
       setGroups(mapped);
-      // Load QR from backend into qrMap so ALL users see it
       mapped.forEach(g => {
         if (g.qrUrl) {
           setQrMap(prev => {
             const gid = String(g.id);
-            // Always use backend URL — it's the source of truth for all users
             return { ...prev, [gid]: { ...(prev[gid]||{}), [g.paidBy]: g.qrUrl } };
           });
         }
@@ -1015,7 +1009,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
     if (!memberList.includes(gForm.paidBy)) { setFormError("Paid-by person must be a selected member."); return; }
     setLoading(true);
     try {
-      // Backend expects user IDs not names
       const paidByUser = allUsers.find(u => u.name === gForm.paidBy);
       const memberIds = memberList.map(name => allUsers.find(u => u.name === name)?.id).filter(Boolean);
       if (!paidByUser) { setFormError("Could not find paid-by user."); setLoading(false); return; }
@@ -1041,7 +1034,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
     const g = groups.find(x => x.id === groupId);
     const owe = g?.owes.find(o => o.name === memberName);
     if (!owe) return;
-    // find userId from allUsers
     const u = allUsers.find(u => u.name === memberName);
     if (!u) return;
     try {
@@ -1063,7 +1055,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
   const deleteGroup = async (id) => {
     try {
       await apiCall(`/api/splits/${id}`, "DELETE");
-      await loadGroups(); // reload from backend
+      await loadGroups();
       setView("list");
     } catch(e) {
       console.error("deleteGroup error:", e);
@@ -1082,7 +1074,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
         {view==="create" && <button className="btn-g" onClick={()=>setView("list")}>← Back</button>}
       </div>
 
-      {/* ── LIST VIEW ── */}
       {view==="list" && <>
         {groups.length===0 && (
           <div className="card" style={{ textAlign:"center", padding:60 }}>
@@ -1119,13 +1110,11 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
         </div>
       </>}
 
-      {/* ── CREATE VIEW ── */}
       {view==="create" && (
         <div className="card" style={{ maxWidth:560 }}>
           <div style={{ fontFamily:"'Syne',sans-serif", fontWeight:800, fontSize:19, marginBottom:22 }}>New Group Split</div>
           <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
             <div><lbl>Split Title</lbl><input className="inp" placeholder="e.g. Pizza Night, Team Dinner" value={gForm.title} onChange={e=>setGForm({...gForm,title:e.target.value})}/></div>
-
             <div>
               <lbl>Select Members</lbl>
               {allUsers.length === 0 && <div style={{ fontSize:12, color:T.muted, marginTop:4 }}>Loading users…</div>}
@@ -1148,12 +1137,10 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                 </div>
               )}
             </div>
-
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12 }}>
               <div><lbl>Total Amount (₹)</lbl><input className="inp" type="number" placeholder="2400" value={gForm.totalAmount} onChange={e=>setGForm({...gForm,totalAmount:e.target.value})}/></div>
               <div><lbl>Date</lbl><input className="inp" type="date" value={gForm.date} onChange={e=>setGForm({...gForm,date:e.target.value})}/></div>
             </div>
-
             <div>
               <lbl>Paid By</lbl>
               <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:8 }}>
@@ -1171,9 +1158,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                 {gForm.selectedMembers.length === 0 && <div style={{ fontSize:12, color:T.muted }}>Select members first</div>}
               </div>
             </div>
-
             <div><lbl>Note (optional)</lbl><input className="inp" placeholder="Dinner at Barbeque Nation" value={gForm.note} onChange={e=>setGForm({...gForm,note:e.target.value})}/></div>
-
             {gForm.totalAmount && gForm.selectedMembers.length > 0 && (
               <div style={{ padding:"14px 16px", background:dark?"#1a1a27":"#f0f2fa", borderRadius:12, border:`1px solid ${T.border2}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                 <div>
@@ -1188,7 +1173,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                 </div>
               </div>
             )}
-
             {formError && <div style={{ background:dark?"#2a141a":"#ffe4e8", border:"1px solid #f43f5e44", borderRadius:10, padding:"10px 14px", color:"#f43f5e", fontSize:13 }}>⚠️ {formError}</div>}
             <div style={{ display:"flex", gap:10, marginTop:4 }}>
               <button className="btn" style={{ flex:1 }} disabled={loading} onClick={handleCreate}>{loading?"Creating…":"Create Split →"}</button>
@@ -1198,7 +1182,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
         </div>
       )}
 
-      {/* ── DETAIL VIEW ── */}
       {view==="detail" && grp && (
         <div>
           <div style={{ display:"flex", gap:10, marginBottom:18 }}>
@@ -1244,10 +1227,9 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
           <div style={{ fontWeight:700, fontSize:15, marginBottom:12 }}>Members & Payment Status</div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:14 }}>
             {grp.owes.map((o,i)=>{
-              // ONE shared QR for the whole split — uploaded once by split owner, visible to all
               const qr = (qrMap[String(grp.id)]||{})[grp.paidBy] || grp.qrUrl;
-              const isOwer       = currentUser.name === o.name;      // person who owes
-              const isSplitOwner = currentUser.name === grp.paidBy;  // person who created/paid
+              const isOwer       = currentUser.name === o.name;
+              const isSplitOwner = currentUser.name === grp.paidBy;
               const canMarkPaid  = isOwer || isSplitOwner;
               const canUndo      = isSplitOwner;
 
@@ -1269,7 +1251,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                   {!o.paid && (
                     <div style={{ borderTop:`1px solid ${T.border2}`, paddingTop:14 }}>
                       {qr ? (
-                        // QR uploaded — show to everyone so they can scan & pay
                         <div style={{ textAlign:"center" }}>
                           <div style={{ fontSize:12, color:T.muted, marginBottom:8 }}>📲 Scan to pay <strong style={{ color:T.text }}>{grp.paidBy}</strong></div>
                           <img src={qr} alt="QR" style={{ width:130, height:130, borderRadius:10, border:`2px solid ${T.border2}`, objectFit:"cover" }}/>
@@ -1281,7 +1262,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                           )}
                         </div>
                       ) : (
-                        // No QR yet — show waiting message; only mark paid is available
                         <div>
                           <div style={{ fontSize:12, color:T.muted, marginBottom:10, textAlign:"center" }}>
                             ⏳ Waiting for <strong style={{ color:T.text }}>{grp.paidBy}</strong> to upload their QR code
@@ -1330,8 +1310,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
                   ₹{(grp.owes.filter(o=>o.paid).length * grp.perHead).toFixed(2)}
                 </div>
               </div>
-
-              {/* ── QR UPLOAD — only visible to split owner (paidBy) ── */}
               {currentUser.name === grp.paidBy && (
                 <div style={{ marginTop:14, borderTop:"1px solid #10b98130", paddingTop:14 }}>
                   {((qrMap[String(grp.id)]||{})[grp.paidBy] || grp.qrUrl) ? (
@@ -1371,7 +1349,6 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
         </div>
       )}
 
-      {/* ── DELETE CONFIRMATION POPUP ── */}
       {deleteConfirm && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.78)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:500, backdropFilter:"blur(6px)" }}
           onClick={()=>setDeleteConfirm(null)}>
@@ -1386,9 +1363,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
             </div>
             <div style={{ display:"flex", gap:10, marginTop:8 }}>
               <button style={{ flex:1, background:T.row, border:`1px solid ${T.border2}`, color:T.muted, padding:"10px 18px", borderRadius:11, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontWeight:500, fontSize:13 }}
-                onClick={()=>setDeleteConfirm(null)}>
-                Cancel
-              </button>
+                onClick={()=>setDeleteConfirm(null)}>Cancel</button>
               <button style={{ flex:1, background:"linear-gradient(135deg,#f43f5e,#e11d48)", border:"none", color:"#fff", padding:"10px 20px", borderRadius:11, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontWeight:600, fontSize:13.5, boxShadow:"0 4px 18px #f43f5e30" }}
                 onClick={()=>{ deleteGroup(deleteConfirm); setDeleteConfirm(null); }}>
                 🗑 Yes, Delete
