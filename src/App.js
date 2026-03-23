@@ -1526,6 +1526,155 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
           )}
 
           <div style={{ fontWeight:700, fontSize:15, marginBottom:12 }}>Members & Payment Status</div>
+
+          {grp.isCustomSplit ? (() => {
+            // Parse all settlements from note: { from, to, amount }
+            const allSettlements = (() => {
+              const match = grp.note.match(/Settlements: ([^|]+)/);
+              if (!match) return [];
+              return match[1].split(",").map(p => {
+                const m = p.trim().match(/(.+?)→(.+?) ₹([\d.]+)/);
+                return m ? { from: m[1].trim(), to: m[2].trim(), amount: parseFloat(m[3]) } : null;
+              }).filter(Boolean);
+            })();
+
+            // Get all creditors (people who are owed money)
+            const creditors = [...new Set(allSettlements.map(s => s.to))];
+
+            return (
+              <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
+                {creditors.map(creditorName => {
+                  const mySettlements = allSettlements.filter(s => s.to === creditorName);
+                  const totalCollecting = mySettlements.reduce((s,x) => s+x.amount, 0);
+                  const totalReceived   = mySettlements.filter(s => {
+                    const owe = grp.owes.find(o => o.name === s.from);
+                    return owe?.paid;
+                  }).reduce((s,x) => s+x.amount, 0);
+                  const qr = (qrMap[String(grp.id)]||{})[creditorName] || (creditorName === grp.paidBy ? grp.qrUrl : null);
+                  const isThisCreditor = currentUser.name === creditorName;
+
+                  return (
+                    <div key={creditorName}>
+                      {/* Creditor card */}
+                      <div style={{ background:dark?"#0d2a1a":"#ecfdf5", border:"1px solid #10b98140", borderRadius:16, padding:18, marginBottom:12 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+                          <div style={{ width:36, height:36, borderRadius:"50%", background:"#10b981", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:13, color:"#fff" }}>
+                            {creditorName.slice(0,2).toUpperCase()}
+                          </div>
+                          <div style={{ flex:1 }}>
+                            <div style={{ fontWeight:700, fontSize:14 }}>{creditorName}</div>
+                            <div style={{ fontSize:11.5, color:"#10b981", fontWeight:600 }}>💳 Overpaid — collecting from {mySettlements.length} person(s)</div>
+                          </div>
+                          <div style={{ textAlign:"right" }}>
+                            <div style={{ fontSize:11, color:"#10b981aa" }}>COLLECTING</div>
+                            <div style={{ fontWeight:800, fontSize:16, color:"#10b981" }}>₹{totalCollecting.toFixed(2)}</div>
+                          </div>
+                        </div>
+                        <div style={{ display:"flex", gap:8, marginBottom: isThisCreditor ? 12 : 0 }}>
+                          <div style={{ flex:1, padding:"8px 12px", background:"#10b98115", borderRadius:10, fontSize:12, color:"#10b981", fontWeight:600, textAlign:"center" }}>
+                            <div style={{ fontSize:10, color:"#10b981aa", marginBottom:2 }}>TO COLLECT</div>
+                            ₹{totalCollecting.toFixed(2)}
+                          </div>
+                          <div style={{ flex:1, padding:"8px 12px", background:"#10b98115", borderRadius:10, fontSize:12, color:"#10b981", fontWeight:600, textAlign:"center" }}>
+                            <div style={{ fontSize:10, color:"#10b981aa", marginBottom:2 }}>RECEIVED</div>
+                            ₹{totalReceived.toFixed(2)}
+                          </div>
+                        </div>
+                        {/* QR upload — only for this creditor */}
+                        {isThisCreditor && (
+                          <div style={{ borderTop:"1px solid #10b98130", paddingTop:12 }}>
+                            {qr ? (
+                              <div style={{ textAlign:"center" }}>
+                                <div style={{ fontSize:12, color:"#10b981", marginBottom:8, fontWeight:600 }}>✅ Your QR is uploaded</div>
+                                <img src={qr} alt="Your QR" style={{ width:100, height:100, borderRadius:10, border:"2px solid #10b98160", objectFit:"cover" }}/>
+                                <label style={{ display:"block", marginTop:8, cursor:"pointer" }}>
+                                  <div style={{ fontSize:12, color:"#10b981", padding:"6px 12px", border:"1px solid #10b98160", borderRadius:9, textAlign:"center" }}>📷 Replace QR</div>
+                                  <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleQRUpload(String(grp.id), creditorName, e.target.files[0])}/>
+                                </label>
+                              </div>
+                            ) : (
+                              <label style={{ cursor:"pointer", display:"block" }}>
+                                <div style={{ border:"2px dashed #10b98160", borderRadius:12, padding:"14px", textAlign:"center" }}>
+                                  <div style={{ fontSize:20, marginBottom:4 }}>📷</div>
+                                  <div style={{ fontSize:13, fontWeight:600, color:"#10b981" }}>Upload Your QR Code</div>
+                                  <div style={{ fontSize:11, color:"#10b981aa", marginTop:2 }}>So others can scan & pay you</div>
+                                </div>
+                                <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleQRUpload(String(grp.id), creditorName, e.target.files[0])}/>
+                              </label>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Debtor cards for this creditor */}
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))", gap:12, paddingLeft:16, borderLeft:"2px solid #10b98140" }}>
+                        {mySettlements.map((s,i) => {
+                          const owe = grp.owes.find(o => o.name === s.from) || { name: s.from, amount: s.amount, paid: false };
+                          const isOwer       = currentUser.name === s.from;
+                          const isCreditorMe = currentUser.name === creditorName;
+                          const canMarkPaid  = isOwer || isCreditorMe;
+                          const canUndo      = isCreditorMe;
+                          return (
+                            <div key={i} style={{ background:T.card, border:`1px solid ${owe.paid?"#10b98140":T.border}`, borderRadius:14, padding:16 }}>
+                              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                                  <div style={{ width:34, height:34, borderRadius:"50%", background:"linear-gradient(135deg,#5b5ef4,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:"#fff" }}>
+                                    {s.from.slice(0,2).toUpperCase()}
+                                  </div>
+                                  <div>
+                                    <div style={{ fontWeight:700, fontSize:14 }}>{s.from}</div>
+                                    <div style={{ fontSize:11, color: owe.paid?"#10b981":"#f97316", fontWeight:600 }}>
+                                      {owe.paid ? "✓ Paid" : "⏳ Pending"} · owes {creditorName}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div style={{ fontWeight:800, fontSize:17, color: owe.paid?"#10b981":"#f43f5e", fontFamily:"'Syne',sans-serif" }}>₹{s.amount.toFixed(2)}</div>
+                              </div>
+                              {!owe.paid && (
+                                <div style={{ borderTop:`1px solid ${T.border2}`, paddingTop:12 }}>
+                                  {qr ? (
+                                    <div style={{ textAlign:"center" }}>
+                                      <div style={{ fontSize:11, color:T.muted, marginBottom:6 }}>📲 Scan to pay <strong>{creditorName}</strong></div>
+                                      <img src={qr} alt="QR" style={{ width:110, height:110, borderRadius:10, border:`2px solid ${T.border2}`, objectFit:"cover" }}/>
+                                      <div style={{ marginTop:6, padding:"6px 10px", background:dark?"#1a1a27":"#f0f4ff", borderRadius:8, fontSize:11, color:T.accent, fontWeight:600 }}>
+                                        Pay ₹{s.amount.toFixed(2)} to {creditorName}
+                                      </div>
+                                      {canMarkPaid && (
+                                        <button className="btn" style={{ width:"100%", marginTop:8, fontSize:12, padding:"8px" }} onClick={()=>markPaid(grp.id, s.from)}>✓ Mark Paid</button>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <div>
+                                      <div style={{ fontSize:11, color:T.muted, textAlign:"center", marginBottom:8 }}>
+                                        ⏳ Waiting for <strong>{creditorName}</strong> to upload QR
+                                      </div>
+                                      {canMarkPaid ? (
+                                        <button className="btn" style={{ width:"100%", fontSize:12, padding:"8px" }} onClick={()=>markPaid(grp.id, s.from)}>✓ Mark as Paid (cash)</button>
+                                      ) : (
+                                        <div style={{ textAlign:"center", fontSize:11, color:T.muted, padding:"10px", background:T.row, borderRadius:9, border:`1px solid ${T.border2}` }}>
+                                          🔒 Only {s.from} or {creditorName} can mark this
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {owe.paid && (
+                                <div style={{ borderTop:`1px solid ${T.border2}`, paddingTop:10, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                                  <div style={{ fontSize:12, color:"#10b981", fontWeight:600 }}>✅ Settled</div>
+                                  {canUndo && <button className="btn-g" style={{ fontSize:11, padding:"4px 10px" }} onClick={()=>unmarkPaid(grp.id, s.from)}>Undo</button>}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })() : (
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:14 }}>
             {grp.owes.map((o,i)=>{
               const qr = (qrMap[String(grp.id)]||{})[grp.paidBy] || grp.qrUrl;
@@ -1639,6 +1788,7 @@ function GroupSplitter({ T, dark, groups, setGroups, allUsers, currentUser, qrMa
               )}
             </div>
           </div>
+          )}
 
           {grp.owes.every(o=>o.paid) && (
             <div style={{ marginTop:18, padding:"18px 22px", background:dark?"#0d2a1a":"#ecfdf5", border:"1px solid #10b981", borderRadius:16, textAlign:"center" }}>
